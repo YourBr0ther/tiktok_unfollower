@@ -500,19 +500,36 @@ class TikTokUnfollower:
         logger.info("📍 Opening following modal...")
 
         try:
-            # Navigate directly to profile page
-            # Try to get username from current URL or use profile icon
+            # First, try to get to the user's profile
+            # Option 1: If we're already logged in, we can get the username from the profile icon
+            # Option 2: Navigate using profile icon
+
+            # Try to get current user's username by clicking profile icon
             try:
-                # Click on profile icon first to ensure we're on our profile
+                logger.info("   Clicking profile icon to navigate to profile...")
                 self.page.click('[data-e2e="profile-icon"]')
-                time.sleep(2)
+                time.sleep(3)
 
                 # Get the profile URL
                 current_url = self.page.url
-                logger.info(f"   On profile: {current_url}")
+                logger.info(f"   Current URL: {current_url}")
+
+                # Extract username from URL if possible (format: tiktok.com/@username)
+                if '@' in current_url:
+                    # Parse username from URL
+                    username = current_url.split('@')[1].split('?')[0].split('/')[0]
+                    logger.info(f"   Detected username: @{username}")
+
+                    # Navigate directly to profile with lang parameter
+                    profile_url = f"https://www.tiktok.com/@{username}?lang=en"
+                    logger.info(f"   Navigating to: {profile_url}")
+                    self.page.goto(profile_url)
+                    time.sleep(2)
+                else:
+                    logger.info(f"   Already on profile: {current_url}")
             except Exception as e:
-                logger.info(f"   Could not click profile icon: {e}")
-                # Continue anyway, might already be on profile
+                logger.info(f"   Could not navigate via profile icon: {e}")
+                logger.info("   Continuing anyway...")
 
             # Look for the Following count/link and click it to open the modal
             logger.info("   Looking for 'Following' text to click...")
