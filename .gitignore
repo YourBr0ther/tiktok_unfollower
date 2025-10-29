@@ -1,0 +1,6 @@
+.env
+state.json
+*.pyc
+__pycache__/
+.pytest_cache/
+playwright/.local-browsers/

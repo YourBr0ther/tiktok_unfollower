@@ -1,0 +1,401 @@
+#!/usr/bin/env python3
+"""
+TikTok Follower Cleanup Script
+Automatically unfollows banned or deleted accounts from your TikTok followers list
+with rate limiting to avoid hitting TikTok's limits.
+"""
+
+import os
+import json
+import time
+from datetime import datetime, timedelta
+from dotenv import load_dotenv
+from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
+
+# Load environment variables
+load_dotenv()
+
+# Configuration
+TIKTOK_USERNAME = os.getenv('TIKTOK_USERNAME')
+TIKTOK_PASSWORD = os.getenv('TIKTOK_PASSWORD')
+UNFOLLOW_DELAY = int(os.getenv('UNFOLLOW_DELAY', 10800))  # 3 hours default
+BATCH_SIZE = int(os.getenv('BATCH_SIZE', 5))
+ACTION_DELAY = int(os.getenv('ACTION_DELAY', 5))
+HEADLESS = os.getenv('HEADLESS', 'false').lower() == 'true'
+
+STATE_FILE = 'state.json'
+
+
+class TikTokUnfollower:
+    def __init__(self):
+        self.state = self.load_state()
+        self.browser = None
+        self.context = None
+        self.page = None
+
+    def load_state(self):
+        """Load the state from file to track progress"""
+        if os.path.exists(STATE_FILE):
+            with open(STATE_FILE, 'r') as f:
+                return json.load(f)
+        return {
+            'last_run': None,
+            'processed_accounts': [],
+            'unfollowed_accounts': []
+        }
+
+    def save_state(self):
+        """Save the current state to file"""
+        with open(STATE_FILE, 'w') as f:
+            json.dump(self.state, f, indent=2)
+
+    def should_run(self):
+        """Check if enough time has passed since last run"""
+        if not self.state['last_run']:
+            return True
+
+        last_run = datetime.fromisoformat(self.state['last_run'])
+        next_run = last_run + timedelta(seconds=UNFOLLOW_DELAY)
+
+        if datetime.now() < next_run:
+            wait_time = (next_run - datetime.now()).total_seconds()
+            print(f"⏰ Too soon to run again. Wait {wait_time/3600:.2f} hours")
+            return False
+
+        return True
+
+    def setup_browser(self):
+        """Initialize Playwright and browser"""
+        print("🌐 Setting up browser...")
+        playwright = sync_playwright().start()
+
+        # Launch browser (Chrome-based for better compatibility)
+        self.browser = playwright.chromium.launch(
+            headless=HEADLESS,
+            args=[
+                '--disable-blink-features=AutomationControlled',
+            ]
+        )
+
+        # Create context with realistic settings
+        self.context = self.browser.new_context(
+            viewport={'width': 1920, 'height': 1080},
+            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        )
+
+        self.page = self.context.new_page()
+        print("✓ Browser ready")
+
+    def login(self):
+        """Login to TikTok account"""
+        print("🔐 Logging in to TikTok...")
+
+        # Navigate to TikTok
+        self.page.goto('https://www.tiktok.com/login/phone-or-email/email')
+
+        # Wait a bit for page to load
+        time.sleep(3)
+
+        try:
+            # Try to find and fill login form
+            # TikTok's selectors can change, so we'll try multiple approaches
+
+            # Look for email/username input
+            username_input = self.page.locator('input[name="username"]').first
+            if username_input.count() == 0:
+                # Alternative selector
+                username_input = self.page.locator('input[type="text"]').first
+
+            username_input.fill(TIKTOK_USERNAME)
+            time.sleep(1)
+
+            # Look for password input
+            password_input = self.page.locator('input[type="password"]').first
+            password_input.fill(TIKTOK_PASSWORD)
+            time.sleep(1)
+
+            # Click login button
+            login_button = self.page.locator('button[type="submit"]').first
+            if login_button.count() == 0:
+                # Alternative - look for button with "Log in" text
+                login_button = self.page.get_by_role('button', name='Log in')
+
+            login_button.click()
+
+            # Wait for navigation or 2FA prompt
+            print("⏳ Waiting for login to complete...")
+            print("   (If 2FA is enabled, please complete it in the browser)")
+
+            # Wait for either successful login or stay on page for manual intervention
+            time.sleep(10)
+
+            # Check if we're logged in by looking for user profile indicators
+            try:
+                # Wait for profile avatar or similar element that indicates login
+                self.page.wait_for_selector('[data-e2e="profile-icon"]', timeout=30000)
+                print("✓ Login successful!")
+            except PlaywrightTimeoutError:
+                print("⚠️  Please complete login manually if needed (2FA, captcha, etc.)")
+                print("   Press Enter when logged in...")
+                input()
+
+        except Exception as e:
+            print(f"⚠️  Login form interaction failed: {e}")
+            print("   Please log in manually in the browser window")
+            print("   Press Enter when logged in...")
+            input()
+
+    def navigate_to_following(self):
+        """Navigate to the following page"""
+        print("📍 Navigating to following page...")
+
+        # Get current username from profile
+        try:
+            # Click on profile icon
+            self.page.click('[data-e2e="profile-icon"]')
+            time.sleep(2)
+
+            # Get the profile URL from current page
+            current_url = self.page.url
+            username = current_url.split('@')[-1].split('?')[0]
+
+            # Navigate to following page
+            following_url = f'https://www.tiktok.com/@{username}/following'
+            self.page.goto(following_url)
+            time.sleep(3)
+
+            print(f"✓ On following page: {following_url}")
+        except Exception as e:
+            print(f"⚠️  Could not auto-navigate: {e}")
+            print("   Please navigate to your Following page manually")
+            print("   Press Enter when ready...")
+            input()
+
+    def scroll_and_load_followers(self):
+        """Scroll through followers list to load all of them"""
+        print("📜 Loading all followers...")
+
+        previous_count = 0
+        no_change_count = 0
+
+        while True:
+            # Scroll to bottom of the followers list
+            self.page.evaluate('''
+                () => {
+                    const scrollContainer = document.querySelector('[data-e2e="following-item-list"]') ||
+                                          document.querySelector('.following-list') ||
+                                          window;
+                    if (scrollContainer) {
+                        scrollContainer.scrollTo(0, scrollContainer.scrollHeight || document.body.scrollHeight);
+                    }
+                }
+            ''')
+
+            time.sleep(2)
+
+            # Count current followers loaded
+            followers = self.page.locator('[data-e2e="following-item"]').count()
+            print(f"   Loaded {followers} accounts...")
+
+            if followers == previous_count:
+                no_change_count += 1
+                if no_change_count >= 3:
+                    print(f"✓ Finished loading. Total: {followers} accounts")
+                    break
+            else:
+                no_change_count = 0
+
+            previous_count = followers
+
+            # Safety check - if we've loaded a very large number, break
+            if followers > 15000:
+                print("⚠️  Loaded over 15,000 accounts. Stopping scroll.")
+                break
+
+        return followers
+
+    def check_if_account_invalid(self, account_element):
+        """Check if an account is banned or deleted"""
+        try:
+            # Look for indicators of banned/deleted accounts
+            # These accounts typically show:
+            # - "Banned account" text
+            # - "Account not found" text
+            # - Disabled/grayed out appearance
+            # - Missing profile picture or username
+
+            text_content = account_element.inner_text().lower()
+
+            # Check for banned or deleted indicators
+            invalid_indicators = [
+                'banned',
+                'account not found',
+                'user not found',
+                'this account',
+                '@'  # Sometimes deleted accounts show just @ with no username
+            ]
+
+            for indicator in invalid_indicators:
+                if indicator in text_content:
+                    return True
+
+            # Check if username is missing or very short (potential deleted account)
+            username_element = account_element.locator('[data-e2e="following-username"]')
+            if username_element.count() > 0:
+                username = username_element.inner_text().strip()
+                if not username or len(username) <= 1:
+                    return True
+
+            return False
+
+        except Exception as e:
+            print(f"   Error checking account: {e}")
+            return False
+
+    def unfollow_invalid_accounts(self):
+        """Find and unfollow banned/deleted accounts"""
+        print("🔍 Scanning for banned/deleted accounts...")
+
+        # Get all follower elements
+        follower_elements = self.page.locator('[data-e2e="following-item"]').all()
+
+        invalid_accounts = []
+
+        # Scan through all followers
+        for idx, element in enumerate(follower_elements):
+            try:
+                # Get username for logging
+                username = "Unknown"
+                try:
+                    username_elem = element.locator('[data-e2e="following-username"]')
+                    if username_elem.count() > 0:
+                        username = username_elem.inner_text().strip()
+                except:
+                    pass
+
+                # Check if account is invalid
+                if self.check_if_account_invalid(element):
+                    print(f"   Found invalid account: {username}")
+                    invalid_accounts.append({
+                        'username': username,
+                        'element': element,
+                        'index': idx
+                    })
+
+                # Progress update every 100 accounts
+                if (idx + 1) % 100 == 0:
+                    print(f"   Scanned {idx + 1}/{len(follower_elements)} accounts...")
+
+            except Exception as e:
+                print(f"   Error processing account {idx}: {e}")
+                continue
+
+        print(f"✓ Found {len(invalid_accounts)} invalid accounts")
+
+        # Unfollow invalid accounts with rate limiting
+        if invalid_accounts:
+            self.unfollow_batch(invalid_accounts)
+
+        return len(invalid_accounts)
+
+    def unfollow_batch(self, accounts):
+        """Unfollow accounts in a batch with rate limiting"""
+        batch_size = min(BATCH_SIZE, len(accounts))
+
+        print(f"🚫 Unfollowing {batch_size} accounts (limited to {BATCH_SIZE} per session)...")
+
+        unfollowed = 0
+        for account in accounts[:batch_size]:
+            try:
+                username = account['username']
+                element = account['element']
+
+                # Check if we've already processed this account
+                if username in self.state['processed_accounts']:
+                    print(f"   Skipping {username} (already processed)")
+                    continue
+
+                # Find and click the following/unfollow button
+                # The button typically says "Following" and changes to "Follow" after clicking
+                unfollow_button = element.locator('button').filter(has_text='Following').first
+
+                if unfollow_button.count() > 0:
+                    # Scroll element into view
+                    element.scroll_into_view_if_needed()
+                    time.sleep(1)
+
+                    # Click unfollow
+                    unfollow_button.click()
+                    time.sleep(ACTION_DELAY)
+
+                    print(f"   ✓ Unfollowed: {username}")
+
+                    # Track in state
+                    self.state['processed_accounts'].append(username)
+                    self.state['unfollowed_accounts'].append({
+                        'username': username,
+                        'timestamp': datetime.now().isoformat()
+                    })
+                    self.save_state()
+
+                    unfollowed += 1
+                else:
+                    print(f"   ⚠️  Could not find unfollow button for: {username}")
+
+            except Exception as e:
+                print(f"   Error unfollowing {account['username']}: {e}")
+                continue
+
+        print(f"✓ Unfollowed {unfollowed} accounts this session")
+
+        # Update last run time
+        self.state['last_run'] = datetime.now().isoformat()
+        self.save_state()
+
+        # Calculate next run time
+        next_run = datetime.now() + timedelta(seconds=UNFOLLOW_DELAY)
+        print(f"⏰ Next run scheduled for: {next_run.strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"   ({UNFOLLOW_DELAY/3600:.1f} hours from now)")
+
+    def run(self):
+        """Main execution flow"""
+        try:
+            if not TIKTOK_USERNAME or not TIKTOK_PASSWORD:
+                print("❌ Error: Please set TIKTOK_USERNAME and TIKTOK_PASSWORD in .env file")
+                return
+
+            if not self.should_run():
+                return
+
+            self.setup_browser()
+            self.login()
+            self.navigate_to_following()
+            self.scroll_and_load_followers()
+            self.unfollow_invalid_accounts()
+
+            print("\n✅ Script completed successfully!")
+            print(f"📊 Total accounts unfollowed: {len(self.state['unfollowed_accounts'])}")
+
+        except Exception as e:
+            print(f"\n❌ Error occurred: {e}")
+            raise
+
+        finally:
+            if self.browser:
+                print("\n🔄 Closing browser...")
+                time.sleep(2)
+                self.browser.close()
+
+
+def main():
+    print("=" * 60)
+    print("TikTok Follower Cleanup Script")
+    print("=" * 60)
+    print()
+
+    unfollower = TikTokUnfollower()
+    unfollower.run()
+
+
+if __name__ == '__main__':
+    main()
