@@ -285,8 +285,8 @@ class TikTokUnfollower:
             input()
 
     def navigate_to_following(self):
-        """Navigate to the following page"""
-        print("📍 Navigating to following page...")
+        """Open the following modal"""
+        print("📍 Opening following modal...")
 
         try:
             # Click on profile icon to go to profile
@@ -297,88 +297,93 @@ class TikTokUnfollower:
             current_url = self.page.url
             print(f"   On profile: {current_url}")
 
-            # Extract username from URL
-            # Expected format: https://www.tiktok.com/@username or https://www.tiktok.com/@username?lang=en
-            if '@' not in current_url:
-                raise ValueError("Could not find username in URL (no @ symbol)")
+            # Look for the Following count/link and click it to open the modal
+            print("   Looking for Following count...")
+            modal_opened = False
 
-            username = current_url.split('@')[-1].split('/')[0].split('?')[0]
+            # Try multiple selectors to find and click the Following count
+            following_selectors = [
+                # Look for elements containing "Following" text with a count
+                '//strong[@title="Following"]/..',  # XPath to parent of Following count
+                '//div[contains(text(), "Following")]/following-sibling::strong/..',  # Following label + count
+                '[data-e2e="following-count"]',  # If there's a data attribute
+                'strong[title="Following"]',  # The count element itself
+            ]
 
-            if not username or len(username) < 2:
-                raise ValueError(f"Invalid username extracted: {username}")
+            for selector in following_selectors:
+                try:
+                    if selector.startswith('//'):
+                        # XPath selector
+                        element = self.page.locator(f'xpath={selector}').first
+                    else:
+                        # CSS selector
+                        element = self.page.locator(selector).first
 
-            print(f"   Username: @{username}")
+                    if element.count() > 0:
+                        print(f"   Found Following count, clicking to open modal...")
+                        element.click()
+                        modal_opened = True
+                        time.sleep(2)
+                        break
+                except Exception as e:
+                    continue
 
-            # Method 1: Try to click the "Following" tab/link on profile
-            print("   Looking for Following tab...")
-            following_clicked = False
+            if not modal_opened:
+                # Fallback: try to find any clickable element with "Following" text
+                print("   Trying text-based search...")
+                try:
+                    # Look for the Following count in the tabs section
+                    following_tab = self.page.locator('text=Following').first
+                    if following_tab.count() > 0:
+                        following_tab.click()
+                        modal_opened = True
+                        time.sleep(2)
+                except Exception:
+                    pass
 
+            if not modal_opened:
+                raise Exception("Could not find Following count to click")
+
+            # Wait for the modal to appear
+            print("   Waiting for modal to open...")
             try:
-                # Try multiple selectors for the Following link/tab
-                following_selectors = [
-                    'a[href*="/following"]',  # Link with /following in href
-                    '[data-e2e="following-count"]',  # Following count element (clickable)
-                    'text=Following',  # Text content
-                ]
-
-                for selector in following_selectors:
-                    try:
-                        following_link = self.page.locator(selector).first
-                        if following_link.count() > 0:
-                            print(f"   Found Following link, clicking...")
-                            following_link.click()
-                            following_clicked = True
-                            time.sleep(3)
-                            break
-                    except Exception:
-                        continue
-
-            except Exception as e:
-                print(f"   Could not click Following tab: {e}")
-
-            # Method 2: If clicking failed, try direct URL navigation
-            if not following_clicked:
-                print("   Trying direct URL navigation...")
-                following_url = f'https://www.tiktok.com/@{username}/following'
-                self.page.goto(following_url)
-                time.sleep(3)
-
-            # Verify we're on the following page
-            final_url = self.page.url
-            if '/following' in final_url:
-                print(f"✓ On following page: {final_url}")
-            else:
-                print(f"⚠️  Warning: URL doesn't contain '/following': {final_url}")
-                print("   You may need to navigate manually")
-                raise ValueError("Not on following page")
+                modal = self.page.locator('[role="dialog"][data-e2e="follow-info-popup"]')
+                modal.wait_for(state='visible', timeout=10000)
+                print("✓ Following modal opened successfully!")
+            except PlaywrightTimeoutError:
+                print("⚠️  Modal did not appear as expected")
+                raise ValueError("Following modal did not open")
 
         except Exception as e:
-            print(f"⚠️  Could not auto-navigate: {e}")
-            print("   Please navigate to your Following page manually:")
-            print("   1. Click on your profile")
-            print("   2. Click on the 'Following' count/tab")
-            print("   Press Enter when ready...")
+            print(f"⚠️  Could not open following modal: {e}")
+            print("   Please open the following modal manually:")
+            print("   1. Make sure you're on your profile")
+            print("   2. Click on your 'Following' count number")
+            print("   3. Wait for the popup to appear")
+            print("   Press Enter when the modal is open...")
             input()
 
     def validate_on_following_page(self):
-        """Validate that we're on the following page"""
-        current_url = self.page.url
-
-        # Check if URL contains "following"
-        if '/following' not in current_url.lower():
-            print(f"⚠️  Warning: Current URL doesn't appear to be a following page")
-            print(f"   Current URL: {current_url}")
+        """Validate that the following modal is open"""
+        try:
+            # Check if the modal dialog is visible
+            modal = self.page.locator('[role="dialog"][data-e2e="follow-info-popup"]')
+            if modal.count() > 0 and modal.is_visible():
+                return True
+            else:
+                print(f"⚠️  Warning: Following modal is not visible")
+                return False
+        except Exception as e:
+            print(f"⚠️  Error checking for modal: {e}")
             return False
 
-        return True
-
     def scroll_and_load_followers(self):
-        """Scroll through followers list to load all of them"""
-        print("📜 Loading all followers...")
+        """Scroll through the modal's followers list to load all of them"""
+        print("📜 Loading all followers from modal...")
 
-        # Validate we're on the right page
+        # Validate the modal is open
         if not self.validate_on_following_page():
-            print("   Please ensure you're on the Following page")
+            print("   Please ensure the Following modal is open")
             print("   Press Enter to continue anyway, or Ctrl+C to abort...")
             try:
                 input()
@@ -390,22 +395,40 @@ class TikTokUnfollower:
         max_attempts = 10  # Maximum scroll attempts if nothing loads
 
         while True:
-            # Scroll to bottom of the followers list
+            # Scroll within the modal's user list container
+            # The modal contains a scrollable div with the user list
             self.page.evaluate('''
                 () => {
-                    const scrollContainer = document.querySelector('[data-e2e="following-item-list"]') ||
-                                          document.querySelector('.following-list') ||
-                                          window;
+                    // Find the modal dialog
+                    const modal = document.querySelector('[role="dialog"][data-e2e="follow-info-popup"]');
+                    if (!modal) return;
+
+                    // Find the scrollable container within the modal
+                    // Try multiple selectors based on the HTML structure
+                    const scrollContainer =
+                        modal.querySelector('[class*="DivUserListContainer"]') ||
+                        modal.querySelector('[class*="UserListContainer"]') ||
+                        modal.querySelector('div[class*="es9zqxz0"]') ||  // Specific class from HTML
+                        modal.querySelector('div > ul') ||
+                        modal;
+
                     if (scrollContainer) {
-                        scrollContainer.scrollTo(0, scrollContainer.scrollHeight || document.body.scrollHeight);
+                        scrollContainer.scrollTop = scrollContainer.scrollHeight;
                     }
                 }
             ''')
 
             time.sleep(2)
 
-            # Count current followers loaded
-            followers = self.page.locator('[data-e2e="following-item"]').count()
+            # Count current followers loaded (look within the modal)
+            # User items are <li> elements containing user info
+            modal = self.page.locator('[role="dialog"][data-e2e="follow-info-popup"]')
+            followers = modal.locator('li').count()
+
+            # Alternative: try to count by user container class
+            if followers == 0:
+                followers = modal.locator('[class*="DivUserContainer"]').count()
+
             print(f"   Loaded {followers} accounts...")
 
             if followers == previous_count:
@@ -426,7 +449,7 @@ class TikTokUnfollower:
             # Safety check - if nothing loads after multiple attempts
             if followers == 0 and no_change_count >= max_attempts:
                 print("⚠️  No followers found after multiple attempts.")
-                print("   Please verify you're on the following page and have followers.")
+                print("   Please verify the Following modal is open and you have followers.")
                 break
 
         return followers
@@ -475,14 +498,17 @@ class TikTokUnfollower:
             return False
 
     def unfollow_invalid_accounts(self):
-        """Find and unfollow banned/deleted accounts"""
-        print("🔍 Scanning for banned/deleted accounts...")
+        """Find and unfollow banned/deleted accounts in the modal"""
+        print("🔍 Scanning for banned/deleted accounts in modal...")
 
-        # Get all follower elements
-        follower_elements = self.page.locator('[data-e2e="following-item"]').all()
+        # Get all follower elements from within the modal
+        modal = self.page.locator('[role="dialog"][data-e2e="follow-info-popup"]')
+
+        # Get follower list items within the modal
+        follower_elements = modal.locator('li').all()
 
         if len(follower_elements) == 0:
-            print("⚠️  No followers loaded. Cannot scan for invalid accounts.")
+            print("⚠️  No followers loaded in modal. Cannot scan for invalid accounts.")
             return 0
 
         invalid_accounts = []
@@ -490,12 +516,19 @@ class TikTokUnfollower:
         # Scan through all followers
         for idx, element in enumerate(follower_elements):
             try:
-                # Get username for logging
+                # Get username for logging - use the unique ID (e.g., @username)
                 username = "Unknown"
                 try:
-                    username_elem = element.locator('[data-e2e="following-username"]')
+                    # Try to find the username element with class containing "PUniqueId"
+                    username_elem = element.locator('[class*="PUniqueId"]').first
                     if username_elem.count() > 0:
                         username = username_elem.inner_text().strip()
+
+                    # Fallback: try data-e2e attribute
+                    if username == "Unknown" or not username:
+                        username_elem = element.locator('[data-e2e="following-username"]')
+                        if username_elem.count() > 0:
+                            username = username_elem.inner_text().strip()
                 except (PlaywrightTimeoutError, Exception) as e:
                     print(f"   Could not extract username for account {idx}: {e}")
 
@@ -540,10 +573,12 @@ class TikTokUnfollower:
                     print(f"   Skipping {username} (already processed)")
                     continue
 
-                # Re-query the element to avoid stale element issues
+                # Re-query the element from modal to avoid stale element issues
                 # Elements can become stale after page changes
                 try:
-                    follower_items = self.page.locator('[data-e2e="following-item"]')
+                    modal = self.page.locator('[role="dialog"][data-e2e="follow-info-popup"]')
+                    follower_items = modal.locator('li')
+
                     if account_index >= follower_items.count():
                         print(f"   ⚠️  Account index out of range for: {username}")
                         continue
@@ -554,9 +589,14 @@ class TikTokUnfollower:
                     continue
 
                 # Find and click the following/unfollow button
-                # The button typically says "Following" and changes to "Follow" after clicking
+                # The button has data-e2e="follow-button" and text "Following"
                 try:
-                    unfollow_button = element.locator('button').filter(has_text='Following').first
+                    # Try the data-e2e selector first
+                    unfollow_button = element.locator('button[data-e2e="follow-button"]').first
+
+                    # Fallback: filter by text
+                    if unfollow_button.count() == 0:
+                        unfollow_button = element.locator('button').filter(has_text='Following').first
 
                     if unfollow_button.count() > 0:
                         # Scroll element into view

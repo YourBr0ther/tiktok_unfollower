@@ -9,7 +9,8 @@
       "Bash(ssh-keygen:*)",
       "Bash(git remote add:*)",
       "Bash(ssh:*)",
-      "Bash(git push:*)"
+      "Bash(git push:*)",
+      "WebSearch"
     ],
     "deny": [],
     "ask": []
