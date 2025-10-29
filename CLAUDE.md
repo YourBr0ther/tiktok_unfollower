@@ -105,6 +105,7 @@ Environment variables in `.env`:
 - `UNFOLLOW_DELAY` - Seconds between batch runs (default: 10800 = 3 hours)
 - `BATCH_SIZE` - Accounts to unfollow per run (default: 5)
 - `ACTION_DELAY` - Seconds between individual unfollows (default: 5)
+- `PROFILE_CHECK_DELAY` - Seconds between profile checks (default: 30, recommended: 30-60)
 - `HEADLESS` - Browser visibility: true/false (default: false)
 - `DRY_RUN` - Safety mode: true/false (default: true)
 - `SAVE_SESSION` - Save login session to avoid re-login: true/false (default: true)
@@ -164,11 +165,21 @@ The scanner skips accounts already in `processed_accounts` list:
 - **Statistics**: Reports total skipped count at end of scan
 
 **Important**: With profile-based verification, each account check requires:
-- Navigate to profile (~2-3 seconds)
-- Check for videos/error messages
-- Navigate back to Following modal
+- Navigate to profile (~3 seconds)
+- Check for videos/error messages, handle Refresh button if needed
+- Delay before next check (default: 30 seconds with ±25% randomization)
 
-Example: 100 accounts × 3 seconds = ~5 minutes. Use `MAX_FOLLOWERS_TO_REVIEW` for faster testing.
+**Timing examples:**
+- 10 accounts: ~5 minutes
+- 50 accounts: ~25 minutes
+- 100 accounts: ~50 minutes
+
+**Bot Detection Prevention:**
+- `PROFILE_CHECK_DELAY` adds delay between profile visits (default: 30s)
+- Randomization (±25%) makes timing more human-like
+- If TikTok shows Refresh buttons, increase this delay to 45-60 seconds
+
+Use `MAX_FOLLOWERS_TO_REVIEW` for faster testing with smaller batches.
 
 ## Important Selectors
 

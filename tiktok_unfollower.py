@@ -10,6 +10,7 @@ import json
 import time
 import logging
 import csv
+import random
 from datetime import datetime, timedelta
 from logging.handlers import RotatingFileHandler
 from dotenv import load_dotenv
@@ -89,6 +90,15 @@ try:
 except ValueError as e:
     logger.info(f"⚠️  Invalid ACTION_DELAY value, using default (5 seconds): {e}")
     ACTION_DELAY = 5
+
+# Delay between profile checks (to avoid bot detection)
+try:
+    PROFILE_CHECK_DELAY = int(os.getenv('PROFILE_CHECK_DELAY', 30))
+    if PROFILE_CHECK_DELAY < 0:
+        raise ValueError("PROFILE_CHECK_DELAY must be positive")
+except ValueError as e:
+    logger.info(f"⚠️  Invalid PROFILE_CHECK_DELAY value, using default (30 seconds): {e}")
+    PROFILE_CHECK_DELAY = 30
 
 HEADLESS = os.getenv('HEADLESS', 'false').lower() == 'true'
 
@@ -935,6 +945,13 @@ class TikTokUnfollower:
                 # Mark as processed
                 self.state['processed_accounts'].append(username)
                 self.save_state()
+
+                # Add delay between profile checks to avoid bot detection
+                # Add some randomization (±25%) to make it more human-like
+                if i < len(usernames) - 1:  # Don't delay after the last account
+                    randomized_delay = PROFILE_CHECK_DELAY + random.randint(-int(PROFILE_CHECK_DELAY * 0.25), int(PROFILE_CHECK_DELAY * 0.25))
+                    logger.info(f"      ⏰ Waiting {randomized_delay} seconds before next check (avoiding bot detection)...")
+                    time.sleep(randomized_delay)
 
             except Exception as e:
                 logger.info(f"   Error checking account {username}: {e}")
