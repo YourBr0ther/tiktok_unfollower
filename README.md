@@ -19,8 +19,11 @@ copy .env.example .env
 #   - For email: Set LOGIN_METHOD=email and add username/password
 #   - For Google: Set LOGIN_METHOD=google (no password needed)
 
-# 3. Run the script
+# 3. Test run (DRY_RUN=true by default - safe mode, no unfollowing)
 python tiktok_unfollower.py
+# This will show you what accounts would be unfollowed without actually doing it
+
+# 4. When ready, set DRY_RUN=false in .env and run again to actually unfollow
 ```
 
 ## Features
@@ -189,6 +192,7 @@ To avoid TikTok's anti-automation measures:
 | `BATCH_SIZE` | 5 | Accounts to unfollow per session |
 | `ACTION_DELAY` | 5 | Seconds between individual unfollows |
 | `HEADLESS` | false | Run browser in background |
+| `DRY_RUN` | true | Test mode - shows what would be unfollowed without actually doing it |
 
 ## Troubleshooting
 

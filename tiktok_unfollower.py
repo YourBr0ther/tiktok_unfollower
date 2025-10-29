@@ -51,6 +51,9 @@ except ValueError as e:
 
 HEADLESS = os.getenv('HEADLESS', 'false').lower() == 'true'
 
+# Safety mode - when enabled, the script will scan and report but NOT actually unfollow
+DRY_RUN = os.getenv('DRY_RUN', 'true').lower() == 'true'
+
 STATE_FILE = 'state.json'
 
 
@@ -673,7 +676,11 @@ class TikTokUnfollower:
         """Unfollow accounts in a batch with rate limiting"""
         batch_size = min(BATCH_SIZE, len(accounts))
 
-        print(f"🚫 Unfollowing {batch_size} accounts (limited to {BATCH_SIZE} per session)...")
+        if DRY_RUN:
+            print(f"🧪 DRY RUN MODE: Would unfollow {batch_size} accounts (limited to {BATCH_SIZE} per session)...")
+            print(f"   No accounts will actually be unfollowed. Set DRY_RUN=false in .env to unfollow.")
+        else:
+            print(f"🚫 Unfollowing {batch_size} accounts (limited to {BATCH_SIZE} per session)...")
 
         unfollowed = 0
         for account in accounts[:batch_size]:
@@ -716,18 +723,22 @@ class TikTokUnfollower:
                         element.scroll_into_view_if_needed()
                         time.sleep(1)
 
-                        # Click unfollow
-                        unfollow_button.click()
-                        time.sleep(ACTION_DELAY)
+                        if DRY_RUN:
+                            # Dry run mode - don't actually click
+                            print(f"   🧪 Would unfollow: {username}")
+                        else:
+                            # Click unfollow
+                            unfollow_button.click()
+                            time.sleep(ACTION_DELAY)
+                            print(f"   ✓ Unfollowed: {username}")
 
-                        print(f"   ✓ Unfollowed: {username}")
-
-                        # Track in state
+                        # Track in state (even in dry run, to avoid re-scanning same accounts)
                         self.state['processed_accounts'].append(username)
-                        self.state['unfollowed_accounts'].append({
-                            'username': username,
-                            'timestamp': datetime.now().isoformat()
-                        })
+                        if not DRY_RUN:
+                            self.state['unfollowed_accounts'].append({
+                                'username': username,
+                                'timestamp': datetime.now().isoformat()
+                            })
                         self.save_state()
 
                         unfollowed += 1
@@ -817,6 +828,14 @@ def main():
     print("=" * 60)
     print("TikTok Follower Cleanup Script")
     print("=" * 60)
+
+    if DRY_RUN:
+        print()
+        print("🧪 " + "=" * 56)
+        print("🧪 DRY RUN MODE - NO ACCOUNTS WILL BE UNFOLLOWED")
+        print("🧪 Set DRY_RUN=false in .env to actually unfollow")
+        print("🧪 " + "=" * 56)
+
     print()
 
     unfollower = TikTokUnfollower()
