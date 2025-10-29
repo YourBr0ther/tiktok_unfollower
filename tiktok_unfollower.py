@@ -15,12 +15,34 @@ from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeo
 # Load environment variables
 load_dotenv()
 
-# Configuration
+# Configuration with validation
 TIKTOK_USERNAME = os.getenv('TIKTOK_USERNAME')
 TIKTOK_PASSWORD = os.getenv('TIKTOK_PASSWORD')
-UNFOLLOW_DELAY = int(os.getenv('UNFOLLOW_DELAY', 10800))  # 3 hours default
-BATCH_SIZE = int(os.getenv('BATCH_SIZE', 5))
-ACTION_DELAY = int(os.getenv('ACTION_DELAY', 5))
+
+try:
+    UNFOLLOW_DELAY = int(os.getenv('UNFOLLOW_DELAY', 10800))  # 3 hours default
+    if UNFOLLOW_DELAY < 0:
+        raise ValueError("UNFOLLOW_DELAY must be positive")
+except ValueError as e:
+    print(f"⚠️  Invalid UNFOLLOW_DELAY value, using default (10800 seconds): {e}")
+    UNFOLLOW_DELAY = 10800
+
+try:
+    BATCH_SIZE = int(os.getenv('BATCH_SIZE', 5))
+    if BATCH_SIZE < 1:
+        raise ValueError("BATCH_SIZE must be at least 1")
+except ValueError as e:
+    print(f"⚠️  Invalid BATCH_SIZE value, using default (5): {e}")
+    BATCH_SIZE = 5
+
+try:
+    ACTION_DELAY = int(os.getenv('ACTION_DELAY', 5))
+    if ACTION_DELAY < 0:
+        raise ValueError("ACTION_DELAY must be positive")
+except ValueError as e:
+    print(f"⚠️  Invalid ACTION_DELAY value, using default (5 seconds): {e}")
+    ACTION_DELAY = 5
+
 HEADLESS = os.getenv('HEADLESS', 'false').lower() == 'true'
 
 STATE_FILE = 'state.json'
@@ -29,6 +51,7 @@ STATE_FILE = 'state.json'
 class TikTokUnfollower:
     def __init__(self):
         self.state = self.load_state()
+        self.playwright = None
         self.browser = None
         self.context = None
         self.page = None
@@ -36,8 +59,27 @@ class TikTokUnfollower:
     def load_state(self):
         """Load the state from file to track progress"""
         if os.path.exists(STATE_FILE):
-            with open(STATE_FILE, 'r') as f:
-                return json.load(f)
+            try:
+                with open(STATE_FILE, 'r') as f:
+                    state = json.load(f)
+                    # Validate state structure
+                    if not isinstance(state, dict):
+                        raise ValueError("State file is not a valid dictionary")
+                    # Ensure required keys exist
+                    state.setdefault('last_run', None)
+                    state.setdefault('processed_accounts', [])
+                    state.setdefault('unfollowed_accounts', [])
+                    return state
+            except (json.JSONDecodeError, ValueError) as e:
+                print(f"⚠️  Warning: Corrupted state file ({e}). Starting fresh.")
+                # Backup corrupted file
+                backup_file = f'{STATE_FILE}.backup'
+                try:
+                    os.rename(STATE_FILE, backup_file)
+                    print(f"   Old state backed up to {backup_file}")
+                except Exception:
+                    pass
+
         return {
             'last_run': None,
             'processed_accounts': [],
@@ -67,10 +109,10 @@ class TikTokUnfollower:
     def setup_browser(self):
         """Initialize Playwright and browser"""
         print("🌐 Setting up browser...")
-        playwright = sync_playwright().start()
+        self.playwright = sync_playwright().start()
 
         # Launch browser (Chrome-based for better compatibility)
-        self.browser = playwright.chromium.launch(
+        self.browser = self.playwright.chromium.launch(
             headless=HEADLESS,
             args=[
                 '--disable-blink-features=AutomationControlled',
@@ -157,7 +199,16 @@ class TikTokUnfollower:
 
             # Get the profile URL from current page
             current_url = self.page.url
-            username = current_url.split('@')[-1].split('?')[0]
+
+            # Extract username from URL
+            # Expected format: https://www.tiktok.com/@username or similar
+            if '@' not in current_url:
+                raise ValueError("Could not find username in URL (no @ symbol)")
+
+            username = current_url.split('@')[-1].split('/')[0].split('?')[0]
+
+            if not username or len(username) < 2:
+                raise ValueError(f"Invalid username extracted: {username}")
 
             # Navigate to following page
             following_url = f'https://www.tiktok.com/@{username}/following'
@@ -171,12 +222,34 @@ class TikTokUnfollower:
             print("   Press Enter when ready...")
             input()
 
+    def validate_on_following_page(self):
+        """Validate that we're on the following page"""
+        current_url = self.page.url
+
+        # Check if URL contains "following"
+        if '/following' not in current_url.lower():
+            print(f"⚠️  Warning: Current URL doesn't appear to be a following page")
+            print(f"   Current URL: {current_url}")
+            return False
+
+        return True
+
     def scroll_and_load_followers(self):
         """Scroll through followers list to load all of them"""
         print("📜 Loading all followers...")
 
+        # Validate we're on the right page
+        if not self.validate_on_following_page():
+            print("   Please ensure you're on the Following page")
+            print("   Press Enter to continue anyway, or Ctrl+C to abort...")
+            try:
+                input()
+            except KeyboardInterrupt:
+                raise
+
         previous_count = 0
         no_change_count = 0
+        max_attempts = 10  # Maximum scroll attempts if nothing loads
 
         while True:
             # Scroll to bottom of the followers list
@@ -212,6 +285,12 @@ class TikTokUnfollower:
                 print("⚠️  Loaded over 15,000 accounts. Stopping scroll.")
                 break
 
+            # Safety check - if nothing loads after multiple attempts
+            if followers == 0 and no_change_count >= max_attempts:
+                print("⚠️  No followers found after multiple attempts.")
+                print("   Please verify you're on the following page and have followers.")
+                break
+
         return followers
 
     def check_if_account_invalid(self, account_element):
@@ -229,10 +308,11 @@ class TikTokUnfollower:
             # Check for banned or deleted indicators
             invalid_indicators = [
                 'banned',
+                'banned account',
                 'account not found',
                 'user not found',
-                'this account',
-                '@'  # Sometimes deleted accounts show just @ with no username
+                'this account is private',
+                'content is unavailable',
             ]
 
             for indicator in invalid_indicators:
@@ -243,8 +323,12 @@ class TikTokUnfollower:
             username_element = account_element.locator('[data-e2e="following-username"]')
             if username_element.count() > 0:
                 username = username_element.inner_text().strip()
-                if not username or len(username) <= 1:
+                # Check for just '@' or '@_' or very short/empty usernames
+                if not username or username in ['@', '@_'] or len(username) <= 1:
                     return True
+            else:
+                # No username element found at all - likely invalid
+                return True
 
             return False
 
@@ -259,6 +343,10 @@ class TikTokUnfollower:
         # Get all follower elements
         follower_elements = self.page.locator('[data-e2e="following-item"]').all()
 
+        if len(follower_elements) == 0:
+            print("⚠️  No followers loaded. Cannot scan for invalid accounts.")
+            return 0
+
         invalid_accounts = []
 
         # Scan through all followers
@@ -270,15 +358,14 @@ class TikTokUnfollower:
                     username_elem = element.locator('[data-e2e="following-username"]')
                     if username_elem.count() > 0:
                         username = username_elem.inner_text().strip()
-                except:
-                    pass
+                except (PlaywrightTimeoutError, Exception) as e:
+                    print(f"   Could not extract username for account {idx}: {e}")
 
                 # Check if account is invalid
                 if self.check_if_account_invalid(element):
                     print(f"   Found invalid account: {username}")
                     invalid_accounts.append({
                         'username': username,
-                        'element': element,
                         'index': idx
                     })
 
@@ -308,39 +395,56 @@ class TikTokUnfollower:
         for account in accounts[:batch_size]:
             try:
                 username = account['username']
-                element = account['element']
+                account_index = account['index']
 
                 # Check if we've already processed this account
                 if username in self.state['processed_accounts']:
                     print(f"   Skipping {username} (already processed)")
                     continue
 
+                # Re-query the element to avoid stale element issues
+                # Elements can become stale after page changes
+                try:
+                    follower_items = self.page.locator('[data-e2e="following-item"]')
+                    if account_index >= follower_items.count():
+                        print(f"   ⚠️  Account index out of range for: {username}")
+                        continue
+
+                    element = follower_items.nth(account_index)
+                except Exception as e:
+                    print(f"   ⚠️  Could not re-query element for {username}: {e}")
+                    continue
+
                 # Find and click the following/unfollow button
                 # The button typically says "Following" and changes to "Follow" after clicking
-                unfollow_button = element.locator('button').filter(has_text='Following').first
+                try:
+                    unfollow_button = element.locator('button').filter(has_text='Following').first
 
-                if unfollow_button.count() > 0:
-                    # Scroll element into view
-                    element.scroll_into_view_if_needed()
-                    time.sleep(1)
+                    if unfollow_button.count() > 0:
+                        # Scroll element into view
+                        element.scroll_into_view_if_needed()
+                        time.sleep(1)
 
-                    # Click unfollow
-                    unfollow_button.click()
-                    time.sleep(ACTION_DELAY)
+                        # Click unfollow
+                        unfollow_button.click()
+                        time.sleep(ACTION_DELAY)
 
-                    print(f"   ✓ Unfollowed: {username}")
+                        print(f"   ✓ Unfollowed: {username}")
 
-                    # Track in state
-                    self.state['processed_accounts'].append(username)
-                    self.state['unfollowed_accounts'].append({
-                        'username': username,
-                        'timestamp': datetime.now().isoformat()
-                    })
-                    self.save_state()
+                        # Track in state
+                        self.state['processed_accounts'].append(username)
+                        self.state['unfollowed_accounts'].append({
+                            'username': username,
+                            'timestamp': datetime.now().isoformat()
+                        })
+                        self.save_state()
 
-                    unfollowed += 1
-                else:
-                    print(f"   ⚠️  Could not find unfollow button for: {username}")
+                        unfollowed += 1
+                    else:
+                        print(f"   ⚠️  Could not find unfollow button for: {username}")
+                except PlaywrightTimeoutError:
+                    print(f"   ⚠️  Timeout finding unfollow button for: {username}")
+                    continue
 
             except Exception as e:
                 print(f"   Error unfollowing {account['username']}: {e}")
@@ -356,6 +460,26 @@ class TikTokUnfollower:
         next_run = datetime.now() + timedelta(seconds=UNFOLLOW_DELAY)
         print(f"⏰ Next run scheduled for: {next_run.strftime('%Y-%m-%d %H:%M:%S')}")
         print(f"   ({UNFOLLOW_DELAY/3600:.1f} hours from now)")
+
+    def cleanup(self):
+        """Clean up browser resources"""
+        try:
+            if self.context:
+                self.context.close()
+        except Exception as e:
+            print(f"   Warning: Error closing context: {e}")
+
+        try:
+            if self.browser:
+                self.browser.close()
+        except Exception as e:
+            print(f"   Warning: Error closing browser: {e}")
+
+        try:
+            if self.playwright:
+                self.playwright.stop()
+        except Exception as e:
+            print(f"   Warning: Error stopping playwright: {e}")
 
     def run(self):
         """Main execution flow"""
@@ -376,15 +500,22 @@ class TikTokUnfollower:
             print("\n✅ Script completed successfully!")
             print(f"📊 Total accounts unfollowed: {len(self.state['unfollowed_accounts'])}")
 
+        except KeyboardInterrupt:
+            print("\n\n⚠️  Script interrupted by user (Ctrl+C)")
+            print("   Progress has been saved. You can run the script again later.")
+            return
+
         except Exception as e:
             print(f"\n❌ Error occurred: {e}")
-            raise
+            import traceback
+            traceback.print_exc()
+            return
 
         finally:
-            if self.browser:
+            if self.browser or self.context or self.playwright:
                 print("\n🔄 Closing browser...")
-                time.sleep(2)
-                self.browser.close()
+                time.sleep(1)
+                self.cleanup()
 
 
 def main():
