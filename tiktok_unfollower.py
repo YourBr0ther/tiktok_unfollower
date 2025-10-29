@@ -288,17 +288,17 @@ class TikTokUnfollower:
         """Navigate to the following page"""
         print("📍 Navigating to following page...")
 
-        # Get current username from profile
         try:
-            # Click on profile icon
+            # Click on profile icon to go to profile
             self.page.click('[data-e2e="profile-icon"]')
-            time.sleep(2)
+            time.sleep(3)
 
-            # Get the profile URL from current page
+            # Get the profile URL
             current_url = self.page.url
+            print(f"   On profile: {current_url}")
 
             # Extract username from URL
-            # Expected format: https://www.tiktok.com/@username or similar
+            # Expected format: https://www.tiktok.com/@username or https://www.tiktok.com/@username?lang=en
             if '@' not in current_url:
                 raise ValueError("Could not find username in URL (no @ symbol)")
 
@@ -307,15 +307,56 @@ class TikTokUnfollower:
             if not username or len(username) < 2:
                 raise ValueError(f"Invalid username extracted: {username}")
 
-            # Navigate to following page
-            following_url = f'https://www.tiktok.com/@{username}/following'
-            self.page.goto(following_url)
-            time.sleep(3)
+            print(f"   Username: @{username}")
 
-            print(f"✓ On following page: {following_url}")
+            # Method 1: Try to click the "Following" tab/link on profile
+            print("   Looking for Following tab...")
+            following_clicked = False
+
+            try:
+                # Try multiple selectors for the Following link/tab
+                following_selectors = [
+                    'a[href*="/following"]',  # Link with /following in href
+                    '[data-e2e="following-count"]',  # Following count element (clickable)
+                    'text=Following',  # Text content
+                ]
+
+                for selector in following_selectors:
+                    try:
+                        following_link = self.page.locator(selector).first
+                        if following_link.count() > 0:
+                            print(f"   Found Following link, clicking...")
+                            following_link.click()
+                            following_clicked = True
+                            time.sleep(3)
+                            break
+                    except Exception:
+                        continue
+
+            except Exception as e:
+                print(f"   Could not click Following tab: {e}")
+
+            # Method 2: If clicking failed, try direct URL navigation
+            if not following_clicked:
+                print("   Trying direct URL navigation...")
+                following_url = f'https://www.tiktok.com/@{username}/following'
+                self.page.goto(following_url)
+                time.sleep(3)
+
+            # Verify we're on the following page
+            final_url = self.page.url
+            if '/following' in final_url:
+                print(f"✓ On following page: {final_url}")
+            else:
+                print(f"⚠️  Warning: URL doesn't contain '/following': {final_url}")
+                print("   You may need to navigate manually")
+                raise ValueError("Not on following page")
+
         except Exception as e:
             print(f"⚠️  Could not auto-navigate: {e}")
-            print("   Please navigate to your Following page manually")
+            print("   Please navigate to your Following page manually:")
+            print("   1. Click on your profile")
+            print("   2. Click on the 'Following' count/tab")
             print("   Press Enter when ready...")
             input()
 
