@@ -391,6 +391,43 @@ class TikTokUnfollower:
                 modal = self.page.locator('[role="dialog"][data-e2e="follow-info-popup"]')
                 modal.wait_for(state='visible', timeout=10000)
                 print("✓ Following modal opened successfully!")
+
+                # Click on the "Following" tab within the modal to show the following list
+                # The modal has tabs: Following, Followers, Friends, Suggested
+                print("   Clicking 'Following' tab in modal...")
+                time.sleep(1)
+
+                # Try to find and click the Following tab
+                following_tab_clicked = False
+                try:
+                    # Look for the tab containing "Following" text within the modal
+                    # The tab structure has div with text "Following" and strong with count
+                    following_tab_selectors = [
+                        # Look for div containing both "Following" text and a count
+                        '//div[contains(@class, "DivTabItem") and .//div[text()="Following"]]',
+                        # Alternative: look for any clickable element with "Following" in the tabs area
+                        '//div[contains(@class, "DivTabs")]//div[text()="Following"]/..',
+                    ]
+
+                    for selector in following_tab_selectors:
+                        try:
+                            tab = modal.locator(f'xpath={selector}').first
+                            if tab.count() > 0:
+                                tab.click()
+                                following_tab_clicked = True
+                                time.sleep(1)
+                                print("   ✓ Clicked on Following tab")
+                                break
+                        except Exception:
+                            continue
+
+                    if not following_tab_clicked:
+                        print("   ⚠️  Could not auto-click Following tab, may already be selected")
+
+                except Exception as e:
+                    print(f"   ⚠️  Error clicking Following tab: {e}")
+                    print("   Continuing anyway - tab may already be selected")
+
             except PlaywrightTimeoutError:
                 print("⚠️  Modal did not appear as expected")
                 raise ValueError("Following modal did not open")
@@ -401,7 +438,8 @@ class TikTokUnfollower:
             print("   1. Make sure you're on your profile")
             print("   2. Click on your 'Following' count number")
             print("   3. Wait for the popup to appear")
-            print("   Press Enter when the modal is open...")
+            print("   4. Click on the 'Following' tab in the modal")
+            print("   Press Enter when the modal is open and Following tab is selected...")
             input()
 
     def validate_on_following_page(self):
