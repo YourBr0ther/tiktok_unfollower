@@ -541,23 +541,9 @@ class TikTokUnfollower:
                     profile_button.click()
                     time.sleep(3)
 
-                    # Get the profile URL
+                    # Get the profile URL for logging
                     current_url = self.page.url
-                    logger.info(f"   Current URL: {current_url}")
-
-                    # Extract username from URL if possible (format: tiktok.com/@username)
-                    if '@' in current_url:
-                        # Parse username from URL
-                        username = current_url.split('@')[1].split('?')[0].split('/')[0]
-                        logger.info(f"   Detected username: @{username}")
-
-                        # Navigate directly to profile with lang parameter
-                        profile_url = f"https://www.tiktok.com/@{username}?lang=en"
-                        logger.info(f"   Navigating to: {profile_url}")
-                        self.page.goto(profile_url)
-                        time.sleep(2)
-                    else:
-                        logger.info(f"   Already on profile: {current_url}")
+                    logger.info(f"   On profile: {current_url}")
                 else:
                     raise Exception("Could not find Profile button with any selector")
 
@@ -567,44 +553,50 @@ class TikTokUnfollower:
                 logger.info("   Press Enter when you're on your profile page...")
                 input()
 
-            # Look for the Following count/link and click it to open the modal
-            logger.info("   Looking for 'Following' text to click...")
+            # Look for the Following button and click it to open the modal
+            logger.info("   Looking for Following button...")
             modal_opened = False
 
-            # Try to find text matching pattern like "123 Following" or just "Following"
+            # Primary: Try the data-e2e="following" selector
             try:
-                # Look for text containing "Following" (with or without a number)
-                # This will match "123 Following", "Following", etc.
-                following_element = self.page.get_by_text('Following', exact=False).first
+                following_element = self.page.locator('[data-e2e="following"]').first
                 if following_element.count() > 0:
-                    logger.info(f"   Found 'Following' text, clicking to open modal...")
+                    logger.info("   Found Following button via data-e2e attribute, clicking...")
                     following_element.click()
                     modal_opened = True
                     time.sleep(2)
             except Exception as e:
-                logger.info(f"   Could not click via text search: {e}")
+                logger.info(f"   Could not click via data-e2e selector: {e}")
 
-            # Fallback: Try multiple selectors to find and click the Following count
+            # Fallback: Try text-based search
+            if not modal_opened:
+                try:
+                    following_element = self.page.get_by_text('Following', exact=False).first
+                    if following_element.count() > 0:
+                        logger.info("   Found Following button via text search, clicking...")
+                        following_element.click()
+                        modal_opened = True
+                        time.sleep(2)
+                except Exception as e:
+                    logger.info(f"   Could not click via text search: {e}")
+
+            # Additional fallback selectors
             if not modal_opened:
                 following_selectors = [
-                    # Look for elements containing "Following" text with a count
-                    '//strong[@title="Following"]/..',  # XPath to parent of Following count
-                    '//div[contains(text(), "Following")]/following-sibling::strong/..',  # Following label + count
-                    '[data-e2e="following-count"]',  # If there's a data attribute
-                    'strong[title="Following"]',  # The count element itself
+                    '[data-e2e="following-count"]',
+                    'strong[title="Following"]',
+                    '//strong[@title="Following"]/..',
                 ]
 
                 for selector in following_selectors:
                     try:
                         if selector.startswith('//'):
-                            # XPath selector
                             element = self.page.locator(f'xpath={selector}').first
                         else:
-                            # CSS selector
                             element = self.page.locator(selector).first
 
                         if element.count() > 0:
-                            logger.info(f"   Found Following count via selector, clicking to open modal...")
+                            logger.info(f"   Found Following button via fallback selector, clicking...")
                             element.click()
                             modal_opened = True
                             time.sleep(2)
@@ -613,7 +605,7 @@ class TikTokUnfollower:
                         continue
 
             if not modal_opened:
-                raise Exception("Could not find 'Following' text or count to click")
+                raise Exception("Could not find Following button with any selector")
 
             # Wait for the modal to appear
             logger.info("   Waiting for modal to open...")
