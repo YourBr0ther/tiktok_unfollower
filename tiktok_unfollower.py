@@ -347,6 +347,31 @@ class TikTokUnfollower:
         # Wait a bit for page to load
         time.sleep(3)
 
+        # First, check if we're already logged in from a saved session
+        logger.info("   Checking if already logged in from saved session...")
+        try:
+            # Check for Messages menu (indicates logged in)
+            messages_selectors = [
+                'text=Messages',
+                '[href*="/messages"]',
+                'a:has-text("Messages")',
+            ]
+
+            already_logged_in = False
+            for selector in messages_selectors:
+                try:
+                    self.page.wait_for_selector(selector, timeout=5000)
+                    already_logged_in = True
+                    break
+                except PlaywrightTimeoutError:
+                    continue
+
+            if already_logged_in:
+                logger.info("✓ Already logged in from saved session!")
+                return
+        except Exception:
+            pass
+
         try:
             # Look for "Continue with Google" button
             # TikTok may use different selectors, try multiple approaches
@@ -380,6 +405,36 @@ class TikTokUnfollower:
                         google_button = None
                 except Exception:
                     pass
+
+            # If no Google button found, might already be logged in
+            if not google_button or google_button.count() == 0:
+                logger.info("   Google login button not found - checking if already logged in...")
+                time.sleep(5)
+
+                # Check for Messages menu again
+                try:
+                    messages_selectors = [
+                        'text=Messages',
+                        '[href*="/messages"]',
+                        'a:has-text("Messages")',
+                    ]
+
+                    already_logged_in = False
+                    for selector in messages_selectors:
+                        try:
+                            self.page.wait_for_selector(selector, timeout=5000)
+                            already_logged_in = True
+                            break
+                        except PlaywrightTimeoutError:
+                            continue
+
+                    if already_logged_in:
+                        logger.info("✓ Already logged in from previous session!")
+                        return
+                    else:
+                        raise Exception("Could not find 'Continue with Google' button and not logged in")
+                except Exception as e:
+                    raise Exception(f"Could not find 'Continue with Google' button: {e}")
 
             if google_button and google_button.count() > 0:
                 logger.info("   Found Google login button, clicking...")
@@ -445,60 +500,67 @@ class TikTokUnfollower:
         logger.info("📍 Opening following modal...")
 
         try:
-            # Click on profile icon to go to profile
-            self.page.click('[data-e2e="profile-icon"]')
-            time.sleep(3)
+            # Navigate directly to profile page
+            # Try to get username from current URL or use profile icon
+            try:
+                # Click on profile icon first to ensure we're on our profile
+                self.page.click('[data-e2e="profile-icon"]')
+                time.sleep(2)
 
-            # Get the profile URL
-            current_url = self.page.url
-            logger.info(f"   On profile: {current_url}")
+                # Get the profile URL
+                current_url = self.page.url
+                logger.info(f"   On profile: {current_url}")
+            except Exception as e:
+                logger.info(f"   Could not click profile icon: {e}")
+                # Continue anyway, might already be on profile
 
             # Look for the Following count/link and click it to open the modal
-            logger.info("   Looking for Following count...")
+            logger.info("   Looking for 'Following' text to click...")
             modal_opened = False
 
-            # Try multiple selectors to find and click the Following count
-            following_selectors = [
-                # Look for elements containing "Following" text with a count
-                '//strong[@title="Following"]/..',  # XPath to parent of Following count
-                '//div[contains(text(), "Following")]/following-sibling::strong/..',  # Following label + count
-                '[data-e2e="following-count"]',  # If there's a data attribute
-                'strong[title="Following"]',  # The count element itself
-            ]
+            # Try to find text matching pattern like "123 Following" or just "Following"
+            try:
+                # Look for text containing "Following" (with or without a number)
+                # This will match "123 Following", "Following", etc.
+                following_element = self.page.get_by_text('Following', exact=False).first
+                if following_element.count() > 0:
+                    logger.info(f"   Found 'Following' text, clicking to open modal...")
+                    following_element.click()
+                    modal_opened = True
+                    time.sleep(2)
+            except Exception as e:
+                logger.info(f"   Could not click via text search: {e}")
 
-            for selector in following_selectors:
-                try:
-                    if selector.startswith('//'):
-                        # XPath selector
-                        element = self.page.locator(f'xpath={selector}').first
-                    else:
-                        # CSS selector
-                        element = self.page.locator(selector).first
+            # Fallback: Try multiple selectors to find and click the Following count
+            if not modal_opened:
+                following_selectors = [
+                    # Look for elements containing "Following" text with a count
+                    '//strong[@title="Following"]/..',  # XPath to parent of Following count
+                    '//div[contains(text(), "Following")]/following-sibling::strong/..',  # Following label + count
+                    '[data-e2e="following-count"]',  # If there's a data attribute
+                    'strong[title="Following"]',  # The count element itself
+                ]
 
-                    if element.count() > 0:
-                        logger.info(f"   Found Following count, clicking to open modal...")
-                        element.click()
-                        modal_opened = True
-                        time.sleep(2)
-                        break
-                except Exception as e:
-                    continue
+                for selector in following_selectors:
+                    try:
+                        if selector.startswith('//'):
+                            # XPath selector
+                            element = self.page.locator(f'xpath={selector}').first
+                        else:
+                            # CSS selector
+                            element = self.page.locator(selector).first
+
+                        if element.count() > 0:
+                            logger.info(f"   Found Following count via selector, clicking to open modal...")
+                            element.click()
+                            modal_opened = True
+                            time.sleep(2)
+                            break
+                    except Exception as e:
+                        continue
 
             if not modal_opened:
-                # Fallback: try to find any clickable element with "Following" text
-                logger.info("   Trying text-based search...")
-                try:
-                    # Look for the Following count in the tabs section
-                    following_tab = self.page.locator('text=Following').first
-                    if following_tab.count() > 0:
-                        following_tab.click()
-                        modal_opened = True
-                        time.sleep(2)
-                except Exception:
-                    pass
-
-            if not modal_opened:
-                raise Exception("Could not find Following count to click")
+                raise Exception("Could not find 'Following' text or count to click")
 
             # Wait for the modal to appear
             logger.info("   Waiting for modal to open...")

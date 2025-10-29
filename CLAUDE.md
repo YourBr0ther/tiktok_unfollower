@@ -45,7 +45,9 @@ Single class design that encapsulates all functionality with the following lifec
 ### Key Architecture Decisions
 
 **Modal-Based UI**: TikTok changed from a dedicated `/following` page to a modal popup. The script:
-- Opens the following modal via the profile's following count
+- Navigates to profile (clicks profile icon or uses current URL)
+- Looks for "Following" text (e.g., "123 Following") and clicks it to open modal
+- Falls back to multiple selector strategies if text search fails
 - Scrolls within the modal's scrollable container (not the page)
 - All follower elements are `<li>` items within `[role="dialog"][data-e2e="follow-info-popup"]`
 
@@ -62,6 +64,8 @@ Single class design that encapsulates all functionality with the following lifec
 **Two Login Methods**:
 - `LOGIN_METHOD=email`: Direct form filling with TIKTOK_USERNAME/PASSWORD
 - `LOGIN_METHOD=google`: OAuth flow requiring manual Google sign-in
+  - **Session awareness**: Checks if already logged in from saved session before looking for login button
+  - If Google button not found, waits 5 seconds and checks for Messages sidebar (indicates already logged in)
 
 ### Detection Logic (`check_if_account_invalid()`)
 
