@@ -500,36 +500,72 @@ class TikTokUnfollower:
         logger.info("📍 Opening following modal...")
 
         try:
-            # First, try to get to the user's profile
-            # Option 1: If we're already logged in, we can get the username from the profile icon
-            # Option 2: Navigate using profile icon
-
-            # Try to get current user's username by clicking profile icon
+            # Try to get current user's username by clicking profile button
             try:
-                logger.info("   Clicking profile icon to navigate to profile...")
-                self.page.click('[data-e2e="profile-icon"]')
-                time.sleep(3)
+                logger.info("   Looking for Profile button...")
 
-                # Get the profile URL
-                current_url = self.page.url
-                logger.info(f"   Current URL: {current_url}")
+                # Try multiple selectors to find the Profile button
+                profile_button = None
 
-                # Extract username from URL if possible (format: tiktok.com/@username)
-                if '@' in current_url:
-                    # Parse username from URL
-                    username = current_url.split('@')[1].split('?')[0].split('/')[0]
-                    logger.info(f"   Detected username: @{username}")
+                # Try by text "Profile"
+                try:
+                    profile_button = self.page.get_by_text('Profile', exact=True).first
+                    if profile_button.count() == 0:
+                        profile_button = None
+                except Exception:
+                    pass
 
-                    # Navigate directly to profile with lang parameter
-                    profile_url = f"https://www.tiktok.com/@{username}?lang=en"
-                    logger.info(f"   Navigating to: {profile_url}")
-                    self.page.goto(profile_url)
-                    time.sleep(2)
+                # Try by data-e2e attribute
+                if not profile_button:
+                    try:
+                        profile_button = self.page.locator('[data-e2e="profile-icon"]').first
+                        if profile_button.count() == 0:
+                            profile_button = None
+                    except Exception:
+                        pass
+
+                # Try by class pattern with Profile label
+                if not profile_button:
+                    try:
+                        profile_button = self.page.locator('.TUXButton-label:has-text("Profile")').first
+                        if profile_button.count() > 0:
+                            # Click the parent button instead of the label
+                            profile_button = profile_button.locator('..').first
+                        else:
+                            profile_button = None
+                    except Exception:
+                        pass
+
+                if profile_button and profile_button.count() > 0:
+                    logger.info("   Found Profile button, clicking...")
+                    profile_button.click()
+                    time.sleep(3)
+
+                    # Get the profile URL
+                    current_url = self.page.url
+                    logger.info(f"   Current URL: {current_url}")
+
+                    # Extract username from URL if possible (format: tiktok.com/@username)
+                    if '@' in current_url:
+                        # Parse username from URL
+                        username = current_url.split('@')[1].split('?')[0].split('/')[0]
+                        logger.info(f"   Detected username: @{username}")
+
+                        # Navigate directly to profile with lang parameter
+                        profile_url = f"https://www.tiktok.com/@{username}?lang=en"
+                        logger.info(f"   Navigating to: {profile_url}")
+                        self.page.goto(profile_url)
+                        time.sleep(2)
+                    else:
+                        logger.info(f"   Already on profile: {current_url}")
                 else:
-                    logger.info(f"   Already on profile: {current_url}")
+                    raise Exception("Could not find Profile button with any selector")
+
             except Exception as e:
-                logger.info(f"   Could not navigate via profile icon: {e}")
-                logger.info("   Continuing anyway...")
+                logger.info(f"   Could not navigate via profile button: {e}")
+                logger.info("   Please click on your Profile button manually")
+                logger.info("   Press Enter when you're on your profile page...")
+                input()
 
             # Look for the Following count/link and click it to open the modal
             logger.info("   Looking for 'Following' text to click...")
