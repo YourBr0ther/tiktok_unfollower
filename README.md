@@ -15,7 +15,9 @@ python -m playwright install chromium
 
 # 2. Configure credentials
 copy .env.example .env
-# Edit .env with your TikTok username and password
+# Edit .env and choose login method:
+#   - For email: Set LOGIN_METHOD=email and add username/password
+#   - For Google: Set LOGIN_METHOD=google (no password needed)
 
 # 3. Run the script
 python tiktok_unfollower.py
@@ -24,7 +26,8 @@ python tiktok_unfollower.py
 ## Features
 
 ### Core Features
-- 🔐 **Automated login** with MFA/2FA human-in-the-loop support
+- 🔐 **Flexible login** - Email/password or Google OAuth support
+- 🔑 **MFA/2FA support** - Human-in-the-loop for authentication
 - 🔍 **Smart detection** of banned/deleted accounts
 - 🚫 **Automatic unfollowing** with configurable batch sizes
 - ⏰ **Intelligent rate limiting** (default: 5 unfollows every 3 hours)
@@ -79,8 +82,16 @@ copy .env.example .env
 Edit `.env` file:
 
 ```env
+# Choose your login method
+LOGIN_METHOD=email  # Options: 'email' or 'google'
+
+# For email login:
 TIKTOK_USERNAME=your_username_or_email
 TIKTOK_PASSWORD=your_password
+
+# For Google login:
+# Leave TIKTOK_USERNAME and TIKTOK_PASSWORD empty
+# You'll sign in through Google OAuth in the browser
 
 # Optional: Adjust rate limiting (defaults shown)
 UNFOLLOW_DELAY=10800  # 3 hours between batches
@@ -88,6 +99,19 @@ BATCH_SIZE=5          # Accounts to unfollow per batch
 ACTION_DELAY=5        # Seconds between individual unfollows
 HEADLESS=false        # Set to true for background operation
 ```
+
+#### Login Methods
+
+**Email/Password Login (`LOGIN_METHOD=email`)**
+- Requires TIKTOK_USERNAME and TIKTOK_PASSWORD
+- Directly fills in login form
+- Supports 2FA/MFA with human intervention
+
+**Google Login (`LOGIN_METHOD=google`)**
+- Uses Google OAuth (Sign in with Google)
+- No need to provide username/password in .env
+- You'll complete Google authentication in the browser
+- Supports all Google security features (2FA, etc.)
 
 ## Usage
 
@@ -158,8 +182,9 @@ To avoid TikTok's anti-automation measures:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `TIKTOK_USERNAME` | - | Your TikTok username or email |
-| `TIKTOK_PASSWORD` | - | Your TikTok password |
+| `LOGIN_METHOD` | email | Login method: 'email' or 'google' |
+| `TIKTOK_USERNAME` | - | Your TikTok username or email (required for email login) |
+| `TIKTOK_PASSWORD` | - | Your TikTok password (required for email login) |
 | `UNFOLLOW_DELAY` | 10800 | Seconds between batches (3 hours) |
 | `BATCH_SIZE` | 5 | Accounts to unfollow per session |
 | `ACTION_DELAY` | 5 | Seconds between individual unfollows |

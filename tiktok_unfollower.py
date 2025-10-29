@@ -18,6 +18,12 @@ load_dotenv()
 # Configuration with validation
 TIKTOK_USERNAME = os.getenv('TIKTOK_USERNAME')
 TIKTOK_PASSWORD = os.getenv('TIKTOK_PASSWORD')
+LOGIN_METHOD = os.getenv('LOGIN_METHOD', 'email').lower()  # 'email' or 'google'
+
+# Validate login method
+if LOGIN_METHOD not in ['email', 'google']:
+    print(f"⚠️  Invalid LOGIN_METHOD '{LOGIN_METHOD}', using 'email'")
+    LOGIN_METHOD = 'email'
 
 try:
     UNFOLLOW_DELAY = int(os.getenv('UNFOLLOW_DELAY', 10800))  # 3 hours default
@@ -134,9 +140,16 @@ class TikTokUnfollower:
 
     def login(self):
         """Login to TikTok account"""
-        print("🔐 Logging in to TikTok...")
+        print(f"🔐 Logging in to TikTok (method: {LOGIN_METHOD})...")
 
-        # Navigate to TikTok
+        if LOGIN_METHOD == 'google':
+            self._login_with_google()
+        else:
+            self._login_with_email()
+
+    def _login_with_email(self):
+        """Login using email/username and password"""
+        # Navigate to TikTok email login page
         self.page.goto('https://www.tiktok.com/login/phone-or-email/email')
 
         # Wait a bit for page to load
@@ -188,6 +201,86 @@ class TikTokUnfollower:
         except Exception as e:
             print(f"⚠️  Login form interaction failed: {e}")
             print("   Please log in manually in the browser window")
+            print("   Press Enter when logged in...")
+            input()
+
+    def _login_with_google(self):
+        """Login using Google OAuth"""
+        # Navigate to TikTok main login page
+        self.page.goto('https://www.tiktok.com/login')
+
+        # Wait a bit for page to load
+        time.sleep(3)
+
+        try:
+            # Look for "Continue with Google" button
+            # TikTok may use different selectors, try multiple approaches
+            print("   Looking for 'Continue with Google' button...")
+
+            google_button = None
+
+            # Try finding by text content
+            try:
+                google_button = self.page.get_by_text('Continue with Google', exact=False).first
+                if google_button.count() == 0:
+                    google_button = None
+            except Exception:
+                pass
+
+            # Try finding by role and name
+            if not google_button:
+                try:
+                    google_button = self.page.get_by_role('link', name='Google').first
+                    if google_button.count() == 0:
+                        google_button = None
+                except Exception:
+                    pass
+
+            # Try finding by common OAuth selectors
+            if not google_button:
+                try:
+                    # Look for SVG or icon with Google branding
+                    google_button = self.page.locator('[aria-label*="Google"], [title*="Google"]').first
+                    if google_button.count() == 0:
+                        google_button = None
+                except Exception:
+                    pass
+
+            if google_button and google_button.count() > 0:
+                print("   Found Google login button, clicking...")
+                google_button.click()
+                time.sleep(3)
+
+                # Now we should be on Google's OAuth page
+                print("   Please complete Google sign-in in the browser...")
+                print("   This includes:")
+                print("   - Selecting your Google account")
+                print("   - Entering password if needed")
+                print("   - Completing 2FA if enabled")
+                print("   - Granting permissions to TikTok")
+
+                # Wait for redirect back to TikTok after OAuth
+                print("⏳ Waiting for OAuth to complete...")
+
+                # Check if we're logged in
+                try:
+                    self.page.wait_for_selector('[data-e2e="profile-icon"]', timeout=60000)
+                    print("✓ Login successful!")
+                except PlaywrightTimeoutError:
+                    print("⚠️  OAuth flow taking longer than expected")
+                    print("   Press Enter when logged in...")
+                    input()
+
+            else:
+                raise Exception("Could not find 'Continue with Google' button")
+
+        except Exception as e:
+            print(f"⚠️  Google login failed: {e}")
+            print("   Please complete login manually in the browser window")
+            print("   Steps:")
+            print("   1. Click 'Continue with Google'")
+            print("   2. Select your Google account")
+            print("   3. Complete authentication")
             print("   Press Enter when logged in...")
             input()
 
@@ -488,9 +581,13 @@ class TikTokUnfollower:
     def run(self):
         """Main execution flow"""
         try:
-            if not TIKTOK_USERNAME or not TIKTOK_PASSWORD:
-                print("❌ Error: Please set TIKTOK_USERNAME and TIKTOK_PASSWORD in .env file")
-                return
+            # Validate credentials based on login method
+            if LOGIN_METHOD == 'email':
+                if not TIKTOK_USERNAME or not TIKTOK_PASSWORD:
+                    print("❌ Error: Please set TIKTOK_USERNAME and TIKTOK_PASSWORD in .env file")
+                    print("   (Required for email login method)")
+                    return
+            # For Google login, credentials are handled through OAuth (no need to check)
 
             if not self.should_run():
                 return
