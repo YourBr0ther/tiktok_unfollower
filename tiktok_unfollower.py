@@ -184,18 +184,38 @@ class TikTokUnfollower:
             # Wait for navigation or 2FA prompt
             print("⏳ Waiting for login to complete...")
             print("   (If 2FA is enabled, please complete it in the browser)")
+            print("   (Checking for Messages in sidebar as login indicator)")
 
             # Wait for either successful login or stay on page for manual intervention
-            time.sleep(10)
+            time.sleep(5)
 
-            # Check if we're logged in by looking for user profile indicators
+            # Check if we're logged in by looking for Messages in the left sidebar
+            # Messages menu item only appears when logged in
             try:
-                # Wait for profile avatar or similar element that indicates login
-                self.page.wait_for_selector('[data-e2e="profile-icon"]', timeout=30000)
-                print("✓ Login successful!")
+                # Try multiple selectors for the Messages menu item
+                messages_selectors = [
+                    'text=Messages',  # Text content
+                    '[href*="/messages"]',  # Link to messages
+                    'a:has-text("Messages")',  # Link containing Messages text
+                ]
+
+                logged_in = False
+                for selector in messages_selectors:
+                    try:
+                        self.page.wait_for_selector(selector, timeout=25000)
+                        logged_in = True
+                        break
+                    except PlaywrightTimeoutError:
+                        continue
+
+                if logged_in:
+                    print("✓ Login successful! (Messages menu detected)")
+                else:
+                    raise PlaywrightTimeoutError("Messages menu not found")
+
             except PlaywrightTimeoutError:
                 print("⚠️  Please complete login manually if needed (2FA, captcha, etc.)")
-                print("   Press Enter when logged in...")
+                print("   Press Enter when logged in (check if Messages appears in sidebar)...")
                 input()
 
         except Exception as e:
@@ -261,14 +281,35 @@ class TikTokUnfollower:
 
                 # Wait for redirect back to TikTok after OAuth
                 print("⏳ Waiting for OAuth to complete...")
+                print("   (Checking for Messages in sidebar as login indicator)")
 
-                # Check if we're logged in
+                # Check if we're logged in by looking for Messages in the left sidebar
+                # Messages menu item only appears when logged in
                 try:
-                    self.page.wait_for_selector('[data-e2e="profile-icon"]', timeout=60000)
-                    print("✓ Login successful!")
+                    # Try multiple selectors for the Messages menu item
+                    messages_selectors = [
+                        'text=Messages',  # Text content
+                        '[href*="/messages"]',  # Link to messages
+                        'a:has-text("Messages")',  # Link containing Messages text
+                    ]
+
+                    logged_in = False
+                    for selector in messages_selectors:
+                        try:
+                            self.page.wait_for_selector(selector, timeout=30000)
+                            logged_in = True
+                            break
+                        except PlaywrightTimeoutError:
+                            continue
+
+                    if logged_in:
+                        print("✓ Login successful! (Messages menu detected)")
+                    else:
+                        raise PlaywrightTimeoutError("Messages menu not found")
+
                 except PlaywrightTimeoutError:
                     print("⚠️  OAuth flow taking longer than expected")
-                    print("   Press Enter when logged in...")
+                    print("   Press Enter when logged in (check if Messages appears in sidebar)...")
                     input()
 
             else:
