@@ -69,21 +69,32 @@ Single class design that encapsulates all functionality with the following lifec
 
 ### Detection Logic (`check_if_account_invalid()`)
 
-Returns `(is_invalid: bool, reason: str)` tuple.
+**Profile-Based Verification Approach:**
 
-Identifies invalid accounts by checking for:
-- Text indicators: "banned", "account not found", "user not found", "content is unavailable"
-- Missing/invalid usernames: just "@", "@_", or empty
-- Multiple selector fallbacks to find username elements
+Instead of guessing from Following list text, the script **visits each user's profile** to verify if they exist:
+
+1. **Extract usernames** from Following modal
+2. **For each username**, navigate to `https://www.tiktok.com/@{username}`
+3. **Check the profile page** for:
+   - "Couldn't find this account" → Invalid
+   - "Account not found" → Invalid
+   - "Banned account" → Invalid
+   - **No videos found** → Invalid (likely deleted/banned/fake)
+   - Has videos → Valid
+4. **Returns** `(is_invalid: bool, reason: str)` tuple
+5. **Navigate back** to Following modal to unfollow invalid accounts
 
 **Detection reasons** tracked for CSV export:
-- "Banned account"
-- "Account not found" / "User not found"
-- "Content unavailable"
-- "Invalid username format"
-- "No username or content found"
+- "Account not found" (profile doesn't exist)
+- "Banned account" (explicitly banned)
+- "No videos found" (empty profile)
+- "No videos (likely deleted/banned)" (profile shows "No content" or "hasn't posted")
 
-**Important**: The script defaults to marking accounts as VALID if uncertain (conservative approach to avoid false positives).
+**Important**:
+- This is **slower** than text-based detection (visits each profile)
+- More **accurate** - actually verifies account existence
+- Use `MAX_FOLLOWERS_TO_REVIEW` to test with smaller batches
+- Defaults to VALID if uncertain (conservative approach to avoid false positives)
 
 ## Configuration
 
@@ -146,13 +157,18 @@ The session file is loaded in `setup_browser()` if it exists, and saved in `save
 
 ## Performance Optimization: Skip Processed Accounts
 
-The scanner now skips accounts already in `processed_accounts` list:
-- **Faster scans**: On subsequent runs, only checks new or unscanned accounts
-- **Efficiency**: Particularly beneficial with large follower lists (1000+)
+The scanner skips accounts already in `processed_accounts` list:
+- **Faster scans**: On subsequent runs, only visits profiles of new/unscanned accounts
+- **Efficiency**: Critical for profile-based verification (avoids re-visiting profiles)
 - **Logging**: Shows "already processed (skipped)" for first 10 accounts
 - **Statistics**: Reports total skipped count at end of scan
 
-This dramatically speeds up repeat runs when you have many followers.
+**Important**: With profile-based verification, each account check requires:
+- Navigate to profile (~2-3 seconds)
+- Check for videos/error messages
+- Navigate back to Following modal
+
+Example: 100 accounts × 3 seconds = ~5 minutes. Use `MAX_FOLLOWERS_TO_REVIEW` for faster testing.
 
 ## Important Selectors
 

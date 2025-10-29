@@ -763,78 +763,77 @@ class TikTokUnfollower:
 
         return followers
 
-    def check_if_account_invalid(self, account_element):
-        """Check if an account is banned or deleted. Returns (is_invalid, reason)"""
+    def check_if_account_invalid(self, username):
+        """
+        Check if an account is banned, deleted, or has no videos by visiting their profile.
+        Returns (is_invalid, reason)
+        """
         try:
-            # Look for indicators of banned/deleted accounts
-            # These accounts typically show:
-            # - "Banned account" text
-            # - "Account not found" text
-            # - Disabled/grayed out appearance
-            # - Missing profile picture or username
+            # Navigate to the user's profile
+            profile_url = f"https://www.tiktok.com/@{username}"
+            logger.info(f"      Checking profile: {profile_url}")
 
-            text_content = account_element.inner_text().lower()
+            self.page.goto(profile_url, timeout=30000)
+            time.sleep(2)
 
-            # Check for banned or deleted indicators in the text
-            invalid_indicators = {
-                'banned': 'Banned account',
-                'banned account': 'Banned account',
-                'account not found': 'Account not found',
-                'user not found': 'User not found',
-                'content is unavailable': 'Content unavailable',
-            }
+            # Check for "Couldn't find this account" message
+            page_text = self.page.inner_text('body').lower()
 
-            for indicator, reason in invalid_indicators.items():
-                if indicator in text_content:
-                    return True, reason
+            if "couldn't find this account" in page_text or "couldn't find this account" in page_text:
+                return True, "Account not found"
 
-            # Try multiple selectors to find the username
-            # TikTok uses class-based selectors for usernames
-            username_selectors = [
-                '[class*="PUniqueId"]',  # Primary username element
-                '[data-e2e="following-username"]',  # Alternative selector
-                'a[href*="/@"]',  # Link to profile
-            ]
+            if "account not found" in page_text:
+                return True, "Account not found"
 
-            username = None
-            for selector in username_selectors:
-                try:
-                    username_element = account_element.locator(selector).first
-                    if username_element.count() > 0:
-                        username = username_element.inner_text().strip()
-                        if username:
+            if "banned" in page_text and "account" in page_text:
+                return True, "Banned account"
+
+            # Check for videos on the profile
+            # Look for video count or video elements
+            try:
+                # Try to find video count indicator
+                # TikTok shows video count on profile, look for common selectors
+                video_count_selectors = [
+                    '[data-e2e="user-post-item"]',  # Individual video items
+                    '[class*="DivItemContainer"]',  # Video container
+                    'div[data-e2e="user-post-item-list"] > div',  # Videos in the list
+                ]
+
+                has_videos = False
+                for selector in video_count_selectors:
+                    try:
+                        video_elements = self.page.locator(selector)
+                        count = video_elements.count()
+                        if count > 0:
+                            logger.info(f"      Found {count} videos")
+                            has_videos = True
                             break
-                except Exception:
-                    continue
+                    except Exception:
+                        continue
 
-            # If we found a username, check if it's valid
-            if username:
-                # Valid accounts should have @username format with at least 2 characters
-                # Invalid indicators: just '@', '@_', or empty
-                if username in ['@', '@_'] or len(username) <= 1:
-                    return True, 'Invalid username format'
-                # If username looks normal, account is valid
+                if not has_videos:
+                    # Also check for "No content" or empty state messages
+                    if "no content" in page_text or "hasn't posted" in page_text:
+                        return True, "No videos (likely deleted/banned)"
+                    # If we can't find videos but also no error message, mark as invalid
+                    return True, "No videos found"
+
+                # Account has videos, it's valid
                 return False, None
-            else:
-                # No username found with any selector - likely invalid
-                # But let's be conservative and not mark as invalid unless we're sure
-                # Check if there's any indication this is a real account
-                # Real accounts should have some content beyond just "Following" button
-                if len(text_content.strip()) < 5:
-                    # Very little content - probably invalid
-                    return True, 'No username or content found'
-                # Has content but no username found - could be a selector issue
-                # Default to NOT invalid to be safe
+
+            except Exception as e:
+                logger.info(f"      Error checking for videos: {e}")
+                # If we can't determine, assume valid to avoid false positives
                 return False, None
 
         except Exception as e:
-            logger.info(f"   Error checking account: {e}")
+            logger.info(f"      Error checking account {username}: {e}")
             # On error, default to NOT invalid to avoid false positives
             return False, None
 
     def unfollow_invalid_accounts(self):
-        """Find and unfollow banned/deleted accounts in the modal"""
-        logger.info("🔍 Scanning for banned/deleted accounts in modal...")
+        """Find and unfollow banned/deleted accounts by checking their profiles"""
+        logger.info("🔍 Scanning for banned/deleted accounts by checking profiles...")
 
         # Get all follower elements from within the modal
         modal = self.page.locator('[role="dialog"][data-e2e="follow-info-popup"]')
@@ -846,14 +845,15 @@ class TikTokUnfollower:
             logger.info("⚠️  No followers loaded in modal. Cannot scan for invalid accounts.")
             return 0
 
-        invalid_accounts = []
+        # First, extract all usernames from the modal
+        logger.info(f"   Extracting usernames from {len(follower_elements)} accounts...")
+        usernames = []
         skipped_count = 0
 
-        # Scan through all followers
         for idx, element in enumerate(follower_elements):
             try:
-                # Get username for logging - use the unique ID (e.g., @username)
-                username = "Unknown"
+                # Get username - use the unique ID (e.g., @username)
+                username = None
                 try:
                     # Try to find the username element with class containing "PUniqueId"
                     username_elem = element.locator('[class*="PUniqueId"]').first
@@ -861,53 +861,77 @@ class TikTokUnfollower:
                         username = username_elem.inner_text().strip()
 
                     # Fallback: try data-e2e attribute
-                    if username == "Unknown" or not username:
+                    if not username:
                         username_elem = element.locator('[data-e2e="following-username"]')
                         if username_elem.count() > 0:
                             username = username_elem.inner_text().strip()
                 except (PlaywrightTimeoutError, Exception) as e:
                     logger.info(f"   Could not extract username for account {idx}: {e}")
 
-                # Skip if already processed
-                if username in self.state['processed_accounts']:
-                    skipped_count += 1
-                    if idx < 10:  # Show for first 10
-                        logger.info(f"   Account {idx}: {username} - already processed (skipped)")
-                    continue
+                if username and username not in ['@', '@_']:
+                    # Remove @ symbol if present
+                    username_clean = username.lstrip('@')
 
-                # Check if account is invalid (with detailed logging for first 10)
-                is_invalid, reason = self.check_if_account_invalid(element)
+                    # Skip if already processed
+                    if username in self.state['processed_accounts']:
+                        skipped_count += 1
+                        if idx < 10:
+                            logger.info(f"   Account {idx}: {username} - already processed (skipped)")
+                        continue
 
-                # Show detailed info for first 10 accounts to help debug
-                if idx < 10:
-                    status = f"INVALID ({reason})" if is_invalid else "valid"
-                    logger.info(f"   Account {idx}: {username} - {status}")
+                    usernames.append({'username': username, 'username_clean': username_clean, 'index': idx})
+
+            except Exception as e:
+                logger.info(f"   Error extracting username for account {idx}: {e}")
+                continue
+
+        logger.info(f"   Extracted {len(usernames)} usernames to check ({skipped_count} already processed)")
+
+        # Now check each account by visiting their profile
+        invalid_accounts = []
+
+        for i, account_info in enumerate(usernames):
+            username = account_info['username']
+            username_clean = account_info['username_clean']
+            idx = account_info['index']
+
+            try:
+                logger.info(f"   [{i+1}/{len(usernames)}] Checking {username}...")
+
+                # Check if account is invalid by visiting profile
+                is_invalid, reason = self.check_if_account_invalid(username_clean)
 
                 if is_invalid:
-                    if idx >= 10:  # Only print "Found invalid" after first 10
-                        logger.info(f"   Found invalid account: {username} ({reason})")
+                    logger.info(f"      ❌ INVALID: {reason}")
                     invalid_accounts.append({
                         'username': username,
                         'index': idx,
                         'reason': reason
                     })
+                else:
+                    logger.info(f"      ✓ Valid account")
 
-                # Progress update every 100 accounts
-                if (idx + 1) % 100 == 0:
-                    logger.info(f"   Scanned {idx + 1}/{len(follower_elements)} accounts...")
+                # Mark as processed
+                self.state['processed_accounts'].append(username)
+                self.save_state()
 
             except Exception as e:
-                logger.info(f"   Error processing account {idx}: {e}")
+                logger.info(f"   Error checking account {username}: {e}")
                 continue
 
-        logger.info(f"✓ Found {len(invalid_accounts)} invalid accounts ({skipped_count} already processed, skipped)")
+        logger.info(f"✓ Found {len(invalid_accounts)} invalid accounts out of {len(usernames)} checked")
 
         # Export to CSV
         if invalid_accounts:
             self.export_to_csv(invalid_accounts)
 
-        # Unfollow invalid accounts with rate limiting
+        # Navigate back to Following modal before unfollowing
         if invalid_accounts:
+            logger.info("📍 Navigating back to Following modal to unfollow invalid accounts...")
+            self.navigate_to_following()
+            time.sleep(2)
+
+            # Unfollow invalid accounts with rate limiting
             self.unfollow_batch(invalid_accounts)
 
         return len(invalid_accounts)
