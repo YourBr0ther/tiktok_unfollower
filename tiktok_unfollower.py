@@ -545,13 +545,12 @@ class TikTokUnfollower:
 
             text_content = account_element.inner_text().lower()
 
-            # Check for banned or deleted indicators
+            # Check for banned or deleted indicators in the text
             invalid_indicators = [
                 'banned',
                 'banned account',
                 'account not found',
                 'user not found',
-                'this account is private',
                 'content is unavailable',
             ]
 
@@ -559,21 +558,48 @@ class TikTokUnfollower:
                 if indicator in text_content:
                     return True
 
-            # Check if username is missing or very short (potential deleted account)
-            username_element = account_element.locator('[data-e2e="following-username"]')
-            if username_element.count() > 0:
-                username = username_element.inner_text().strip()
-                # Check for just '@' or '@_' or very short/empty usernames
-                if not username or username in ['@', '@_'] or len(username) <= 1:
-                    return True
-            else:
-                # No username element found at all - likely invalid
-                return True
+            # Try multiple selectors to find the username
+            # TikTok uses class-based selectors for usernames
+            username_selectors = [
+                '[class*="PUniqueId"]',  # Primary username element
+                '[data-e2e="following-username"]',  # Alternative selector
+                'a[href*="/@"]',  # Link to profile
+            ]
 
-            return False
+            username = None
+            for selector in username_selectors:
+                try:
+                    username_element = account_element.locator(selector).first
+                    if username_element.count() > 0:
+                        username = username_element.inner_text().strip()
+                        if username:
+                            break
+                except Exception:
+                    continue
+
+            # If we found a username, check if it's valid
+            if username:
+                # Valid accounts should have @username format with at least 2 characters
+                # Invalid indicators: just '@', '@_', or empty
+                if username in ['@', '@_'] or len(username) <= 1:
+                    return True
+                # If username looks normal, account is valid
+                return False
+            else:
+                # No username found with any selector - likely invalid
+                # But let's be conservative and not mark as invalid unless we're sure
+                # Check if there's any indication this is a real account
+                # Real accounts should have some content beyond just "Following" button
+                if len(text_content.strip()) < 5:
+                    # Very little content - probably invalid
+                    return True
+                # Has content but no username found - could be a selector issue
+                # Default to NOT invalid to be safe
+                return False
 
         except Exception as e:
             print(f"   Error checking account: {e}")
+            # On error, default to NOT invalid to avoid false positives
             return False
 
     def unfollow_invalid_accounts(self):
@@ -611,9 +637,17 @@ class TikTokUnfollower:
                 except (PlaywrightTimeoutError, Exception) as e:
                     print(f"   Could not extract username for account {idx}: {e}")
 
-                # Check if account is invalid
-                if self.check_if_account_invalid(element):
-                    print(f"   Found invalid account: {username}")
+                # Check if account is invalid (with detailed logging for first 10)
+                is_invalid = self.check_if_account_invalid(element)
+
+                # Show detailed info for first 10 accounts to help debug
+                if idx < 10:
+                    status = "INVALID" if is_invalid else "valid"
+                    print(f"   Account {idx}: {username} - {status}")
+
+                if is_invalid:
+                    if idx >= 10:  # Only print "Found invalid" after first 10
+                        print(f"   Found invalid account: {username}")
                     invalid_accounts.append({
                         'username': username,
                         'index': idx
