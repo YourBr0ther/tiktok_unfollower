@@ -1,7 +1,11 @@
 {
   "permissions": {
     "allow": [
-      "Bash(git init:*)"
+      "Bash(git init:*)",
+      "Bash(git commit -m \"$(cat <<''EOF''\nInitial commit: TikTok follower cleanup automation script\n\nAdd Python script to automatically unfollow banned/deleted TikTok accounts\nwith rate limiting to avoid hitting platform limits.\n\nFeatures:\n- Playwright-based browser automation\n- Automated login with MFA/2FA support\n- Follower list scraping and loading\n- Detection of banned/deleted accounts\n- Rate-limited unfollowing (configurable batch size and delays)\n- State persistence for resumable operations\n- Comprehensive documentation\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n)\")",
+      "Bash(git config:*)",
+      "Bash(git commit:*)",
+      "Bash(git add:*)"
     ],
     "deny": [],
     "ask": []

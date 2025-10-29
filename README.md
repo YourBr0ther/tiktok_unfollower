@@ -6,20 +6,53 @@ Automatically unfollow banned or deleted accounts from your TikTok followers lis
 
 TikTok has a 10,000 follower limit, but doesn't automatically remove banned or deleted accounts. This script helps you clean up those inactive accounts to make room for new followers.
 
+## Quick Start
+
+```bash
+# 1. Install dependencies
+pip install -r requirements.txt
+python -m playwright install chromium
+
+# 2. Configure credentials
+copy .env.example .env
+# Edit .env with your TikTok username and password
+
+# 3. Run the script
+python tiktok_unfollower.py
+```
+
 ## Features
 
-- 🔐 Automated login with MFA/2FA support
-- 🔍 Scans all your followers for banned/deleted accounts
-- 🚫 Automatically unfollows invalid accounts
-- ⏰ Rate limiting (default: 5 unfollows every 3 hours)
-- 💾 State persistence (resumes where it left off)
-- 🛡️ Safe delays to avoid detection
+### Core Features
+- 🔐 **Automated login** with MFA/2FA human-in-the-loop support
+- 🔍 **Smart detection** of banned/deleted accounts
+- 🚫 **Automatic unfollowing** with configurable batch sizes
+- ⏰ **Intelligent rate limiting** (default: 5 unfollows every 3 hours)
+- 💾 **State persistence** - resumes where it left off between runs
+- 🛡️ **Safe delays** to avoid detection
+
+### Robust Error Handling
+- ✅ **Corrupted state recovery** - auto-backups and repairs broken state files
+- ✅ **Configuration validation** - validates all settings with safe defaults
+- ✅ **Stale element protection** - handles dynamic page changes gracefully
+- ✅ **Graceful interruption** - Ctrl+C saves progress and exits cleanly
+- ✅ **Resource cleanup** - properly closes all browser resources
+- ✅ **Page validation** - ensures you're on the correct page before operating
+- ✅ **Zero-follower detection** - handles edge cases safely
+
+## ⚠️ Important Warnings
+
+- **Account Safety**: Automated interactions may violate TikTok's Terms of Service. Use at your own risk.
+- **Rate Limiting**: Start with conservative settings. Aggressive unfollowing may trigger TikTok's anti-bot measures.
+- **Credential Security**: Never share your `.env` file. It contains your login credentials.
+- **No Guarantees**: This script is provided as-is for educational purposes. The author is not responsible for any account actions taken by TikTok.
 
 ## Requirements
 
 - Python 3.7+
 - Windows OS (or any OS with GUI for browser automation)
 - Active TikTok account
+- Internet connection
 
 ## Setup
 
@@ -160,23 +193,118 @@ If TikTok temporarily blocks actions:
 - Decrease `BATCH_SIZE` (e.g., 3 instead of 5)
 - Increase `ACTION_DELAY` (e.g., 10 seconds)
 
+## Expected Output
+
+When running the script, you'll see output like this:
+
+```
+============================================================
+TikTok Follower Cleanup Script
+============================================================
+
+🌐 Setting up browser...
+✓ Browser ready
+🔐 Logging in to TikTok...
+⏳ Waiting for login to complete...
+   (If 2FA is enabled, please complete it in the browser)
+✓ Login successful!
+📍 Navigating to following page...
+✓ On following page: https://www.tiktok.com/@username/following
+📜 Loading all followers...
+   Loaded 150 accounts...
+   Loaded 300 accounts...
+   Loaded 450 accounts...
+✓ Finished loading. Total: 450 accounts
+🔍 Scanning for banned/deleted accounts...
+   Found invalid account: @deleted_user123
+   Found invalid account: @banned_account
+   Scanned 100/450 accounts...
+✓ Found 12 invalid accounts
+🚫 Unfollowing 5 accounts (limited to 5 per session)...
+   ✓ Unfollowed: @deleted_user123
+   ✓ Unfollowed: @banned_account
+   ✓ Unfollowed: @user_not_found
+   ✓ Unfollowed: @invalid_user
+   ✓ Unfollowed: @banned_user2
+✓ Unfollowed 5 accounts this session
+⏰ Next run scheduled for: 2025-10-29 16:30:00
+   (3.0 hours from now)
+
+✅ Script completed successfully!
+📊 Total accounts unfollowed: 5
+
+🔄 Closing browser...
+```
+
+## FAQ
+
+### How often should I run this script?
+The default is every 3 hours unfollowing 5 accounts at a time. This conservative approach minimizes detection risk. You can adjust `UNFOLLOW_DELAY` and `BATCH_SIZE` based on your comfort level.
+
+### Will this get my account banned?
+There's always a risk when using automation. To minimize risk:
+- Use conservative rate limiting (default settings are recommended)
+- Don't run it too frequently
+- Monitor the first few runs manually
+- Stop immediately if you receive any warnings from TikTok
+
+### Can I run this on a schedule automatically?
+Yes, you can use Windows Task Scheduler (Windows) or cron (Linux/Mac). However:
+- Set `HEADLESS=true` for background operation
+- You'll need to manually complete MFA on first login
+- Consider saving browser session state (advanced)
+
+### What if the script crashes or I interrupt it?
+The script saves progress after each unfollow in `state.json`. You can safely interrupt with Ctrl+C and run again later. It will resume where it left off and won't re-unfollow accounts it's already processed.
+
+### The script says "Too soon to run again"
+This is the rate limiting in action. The script enforces a delay between runs (default 3 hours). You can:
+- Wait until the specified time
+- Delete `state.json` to reset (not recommended - you'll lose tracking)
+- Adjust `UNFOLLOW_DELAY` in `.env`
+
+### How do I know which accounts are considered "invalid"?
+The script looks for:
+- Accounts marked as "banned" or "banned account"
+- Accounts with "account not found" or "user not found"
+- Accounts with missing or placeholder usernames (e.g., just "@")
+- Accounts marked as "content unavailable"
+
+### Can I adjust the detection criteria?
+Yes, but it requires modifying the `check_if_account_invalid()` function in `tiktok_unfollower.py`. The indicators list can be customized to match specific patterns you're seeing.
+
 ## Safety & Best Practices
 
-- ✅ Start with conservative settings (small batch size, long delays)
-- ✅ Monitor first few runs to ensure proper operation
-- ✅ Keep `HEADLESS=false` initially to watch what's happening
-- ✅ Don't share your `.env` file (contains credentials)
-- ⚠️ Use at your own risk - automated actions may violate TikTok's ToS
-- ⚠️ TikTok may implement countermeasures against automation
+- ✅ **Start conservative** - Use default settings for first few runs
+- ✅ **Monitor initially** - Keep `HEADLESS=false` to watch what's happening
+- ✅ **Check state.json** - Review what accounts were unfollowed
+- ✅ **Backup credentials** - Store `.env` securely, never commit to git
+- ✅ **Test on small batch** - Start with `BATCH_SIZE=1` or `2` initially
+- ⚠️ **Use at own risk** - Automated actions may violate TikTok's ToS
+- ⚠️ **No guarantees** - TikTok may detect and block automation
+- ⚠️ **Account responsibility** - You are responsible for all actions taken
 
-## Files
+## Project Files
 
-- `tiktok_unfollower.py` - Main script
-- `requirements.txt` - Python dependencies
-- `.env` - Your configuration (create from `.env.example`)
-- `state.json` - Persistent state (auto-generated)
-- `.gitignore` - Prevents committing sensitive files
+| File | Purpose | Auto-Generated? |
+|------|---------|-----------------|
+| `tiktok_unfollower.py` | Main automation script | No |
+| `requirements.txt` | Python dependencies | No |
+| `.env` | Your credentials & config | No (create from example) |
+| `.env.example` | Configuration template | No |
+| `state.json` | Tracks progress & history | Yes |
+| `.gitignore` | Prevents committing secrets | No |
+| `README.md` | This documentation | No |
+| `PROJECT_REPORT.md` | Development summary | No |
+
+## Development
+
+See `PROJECT_REPORT.md` for:
+- Complete development history
+- Bug fixes applied
+- Architecture decisions
+- Testing recommendations
 
 ## License
 
-Use at your own risk. This is for educational purposes.
+Use at your own risk. This is for educational purposes only.

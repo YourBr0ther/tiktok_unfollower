@@ -88,8 +88,12 @@ class TikTokUnfollower:
 
     def save_state(self):
         """Save the current state to file"""
-        with open(STATE_FILE, 'w') as f:
-            json.dump(self.state, f, indent=2)
+        try:
+            with open(STATE_FILE, 'w') as f:
+                json.dump(self.state, f, indent=2)
+        except (IOError, OSError) as e:
+            print(f"⚠️  Warning: Could not save state to {STATE_FILE}: {e}")
+            # Don't raise - allow script to continue even if state save fails
 
     def should_run(self):
         """Check if enough time has passed since last run"""
