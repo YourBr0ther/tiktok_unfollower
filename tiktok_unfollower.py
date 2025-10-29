@@ -774,11 +774,32 @@ class TikTokUnfollower:
             logger.info(f"      Checking profile: {profile_url}")
 
             self.page.goto(profile_url, timeout=30000)
-            time.sleep(2)
+            time.sleep(3)
 
-            # Check for "Couldn't find this account" message
+            # Secondary check: Look for Refresh button (indicates page load issue, not invalid account)
+            try:
+                refresh_button = self.page.get_by_text('Refresh', exact=False).first
+                if refresh_button.count() > 0:
+                    logger.info(f"      ⚠️  Found Refresh button - page may not have loaded properly")
+                    logger.info(f"      Clicking Refresh and retrying...")
+                    refresh_button.click()
+                    time.sleep(3)
+            except Exception:
+                pass
+
+            # Get page text after potential refresh
             page_text = self.page.inner_text('body').lower()
 
+            # Check again for Refresh button after waiting - if still there, skip this account
+            try:
+                refresh_button = self.page.get_by_text('Refresh', exact=False).first
+                if refresh_button.count() > 0:
+                    logger.info(f"      ⚠️  Refresh button still present - skipping to avoid false positive")
+                    return False, None  # Mark as valid to avoid false positive
+            except Exception:
+                pass
+
+            # Check for "Couldn't find this account" message
             if "couldn't find this account" in page_text or "couldn't find this account" in page_text:
                 return True, "Account not found"
 
