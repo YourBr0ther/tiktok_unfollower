@@ -1,5 +1,10 @@
 .env
 state.json
+state.json.backup
+session.json
+*.log
+*.log.*
+invalid_accounts.csv
 *.pyc
 __pycache__/
 .pytest_cache/

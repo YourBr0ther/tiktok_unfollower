@@ -8,12 +8,53 @@ with rate limiting to avoid hitting TikTok's limits.
 import os
 import json
 import time
+import logging
+import csv
 from datetime import datetime, timedelta
+from logging.handlers import RotatingFileHandler
 from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
 # Load environment variables
 load_dotenv()
+
+# Setup logging first (before any configuration that might log warnings)
+def setup_logging():
+    """Configure logging to both file and console"""
+    logger = logging.getLogger('TikTokUnfollower')
+    logger.setLevel(logging.INFO)
+
+    # Prevent duplicate handlers if function is called multiple times
+    if logger.handlers:
+        return logger
+
+    # File handler with rotation (max 5MB, keep 3 backups)
+    file_handler = RotatingFileHandler(
+        'tiktok_unfollower.log',
+        maxBytes=5*1024*1024,  # 5MB
+        backupCount=3,
+        encoding='utf-8'
+    )
+    file_handler.setLevel(logging.INFO)
+    file_formatter = logging.Formatter(
+        '%(asctime)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    file_handler.setFormatter(file_formatter)
+
+    # Console handler (simpler format)
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    console_formatter = logging.Formatter('%(message)s')
+    console_handler.setFormatter(console_formatter)
+
+    logger.addHandler(file_handler)
+    logger.addHandler(console_handler)
+
+    return logger
+
+# Initialize logger
+logger = setup_logging()
 
 # Configuration with validation
 TIKTOK_USERNAME = os.getenv('TIKTOK_USERNAME')
@@ -22,7 +63,7 @@ LOGIN_METHOD = os.getenv('LOGIN_METHOD', 'email').lower()  # 'email' or 'google'
 
 # Validate login method
 if LOGIN_METHOD not in ['email', 'google']:
-    print(f"⚠️  Invalid LOGIN_METHOD '{LOGIN_METHOD}', using 'email'")
+    logger.info(f"⚠️  Invalid LOGIN_METHOD '{LOGIN_METHOD}', using 'email'")
     LOGIN_METHOD = 'email'
 
 try:
@@ -30,7 +71,7 @@ try:
     if UNFOLLOW_DELAY < 0:
         raise ValueError("UNFOLLOW_DELAY must be positive")
 except ValueError as e:
-    print(f"⚠️  Invalid UNFOLLOW_DELAY value, using default (10800 seconds): {e}")
+    logger.info(f"⚠️  Invalid UNFOLLOW_DELAY value, using default (10800 seconds): {e}")
     UNFOLLOW_DELAY = 10800
 
 try:
@@ -38,7 +79,7 @@ try:
     if BATCH_SIZE < 1:
         raise ValueError("BATCH_SIZE must be at least 1")
 except ValueError as e:
-    print(f"⚠️  Invalid BATCH_SIZE value, using default (5): {e}")
+    logger.info(f"⚠️  Invalid BATCH_SIZE value, using default (5): {e}")
     BATCH_SIZE = 5
 
 try:
@@ -46,7 +87,7 @@ try:
     if ACTION_DELAY < 0:
         raise ValueError("ACTION_DELAY must be positive")
 except ValueError as e:
-    print(f"⚠️  Invalid ACTION_DELAY value, using default (5 seconds): {e}")
+    logger.info(f"⚠️  Invalid ACTION_DELAY value, using default (5 seconds): {e}")
     ACTION_DELAY = 5
 
 HEADLESS = os.getenv('HEADLESS', 'false').lower() == 'true'
@@ -54,7 +95,24 @@ HEADLESS = os.getenv('HEADLESS', 'false').lower() == 'true'
 # Safety mode - when enabled, the script will scan and report but NOT actually unfollow
 DRY_RUN = os.getenv('DRY_RUN', 'true').lower() == 'true'
 
+# Limit how many followers to review (helpful for testing)
+# Set to 0 or leave empty to review all followers
+try:
+    MAX_FOLLOWERS_TO_REVIEW = int(os.getenv('MAX_FOLLOWERS_TO_REVIEW', 0))
+    if MAX_FOLLOWERS_TO_REVIEW < 0:
+        raise ValueError("MAX_FOLLOWERS_TO_REVIEW must be non-negative")
+except ValueError as e:
+    logger.info(f"⚠️  Invalid MAX_FOLLOWERS_TO_REVIEW value, using default (0 = unlimited): {e}")
+    MAX_FOLLOWERS_TO_REVIEW = 0
+
+# Session persistence - saves login state to avoid logging in every time
+SAVE_SESSION = os.getenv('SAVE_SESSION', 'true').lower() == 'true'
+
+# File paths
 STATE_FILE = 'state.json'
+SESSION_FILE = 'session.json'
+LOG_FILE = 'tiktok_unfollower.log'
+CSV_EXPORT_FILE = 'invalid_accounts.csv'
 
 
 class TikTokUnfollower:
@@ -80,12 +138,12 @@ class TikTokUnfollower:
                     state.setdefault('unfollowed_accounts', [])
                     return state
             except (json.JSONDecodeError, ValueError) as e:
-                print(f"⚠️  Warning: Corrupted state file ({e}). Starting fresh.")
+                logger.warning(f"Corrupted state file ({e}). Starting fresh.")
                 # Backup corrupted file
                 backup_file = f'{STATE_FILE}.backup'
                 try:
                     os.rename(STATE_FILE, backup_file)
-                    print(f"   Old state backed up to {backup_file}")
+                    logger.info(f"Old state backed up to {backup_file}")
                 except Exception:
                     pass
 
@@ -101,7 +159,7 @@ class TikTokUnfollower:
             with open(STATE_FILE, 'w') as f:
                 json.dump(self.state, f, indent=2)
         except (IOError, OSError) as e:
-            print(f"⚠️  Warning: Could not save state to {STATE_FILE}: {e}")
+            logger.warning(f"Could not save state to {STATE_FILE}: {e}")
             # Don't raise - allow script to continue even if state save fails
 
     def should_run(self):
@@ -114,14 +172,59 @@ class TikTokUnfollower:
 
         if datetime.now() < next_run:
             wait_time = (next_run - datetime.now()).total_seconds()
-            print(f"⏰ Too soon to run again. Wait {wait_time/3600:.2f} hours")
+            logger.info(f"⏰ Too soon to run again. Wait {wait_time/3600:.2f} hours")
             return False
 
         return True
 
+    def export_to_csv(self, invalid_accounts):
+        """Export invalid accounts to CSV file"""
+        try:
+            # Check if file exists to determine if we need to write headers
+            file_exists = os.path.exists(CSV_EXPORT_FILE)
+
+            with open(CSV_EXPORT_FILE, 'a', newline='', encoding='utf-8') as f:
+                writer = csv.writer(f)
+
+                # Write header if file is new
+                if not file_exists:
+                    writer.writerow(['Timestamp', 'Username', 'Detection Reason'])
+
+                # Write account data
+                timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                for account in invalid_accounts:
+                    writer.writerow([
+                        timestamp,
+                        account.get('username', 'Unknown'),
+                        account.get('reason', 'Invalid account detected')
+                    ])
+
+            logger.info(f"📄 Exported {len(invalid_accounts)} invalid accounts to {CSV_EXPORT_FILE}")
+        except Exception as e:
+            logger.warning(f"Could not export to CSV: {e}")
+
+    def load_session(self):
+        """Load saved browser session if available"""
+        if SAVE_SESSION and os.path.exists(SESSION_FILE):
+            try:
+                logger.info("📂 Loading saved session...")
+                return SESSION_FILE
+            except Exception as e:
+                logger.warning(f"Could not load session: {e}")
+        return None
+
+    def save_session_state(self):
+        """Save browser session for future runs"""
+        if SAVE_SESSION and self.context:
+            try:
+                self.context.storage_state(path=SESSION_FILE)
+                logger.info(f"💾 Session saved to {SESSION_FILE}")
+            except Exception as e:
+                logger.warning(f"Could not save session: {e}")
+
     def setup_browser(self):
         """Initialize Playwright and browser"""
-        print("🌐 Setting up browser...")
+        logger.info("🌐 Setting up browser...")
         self.playwright = sync_playwright().start()
 
         # Launch browser (Chrome-based for better compatibility)
@@ -132,18 +235,27 @@ class TikTokUnfollower:
             ]
         )
 
-        # Create context with realistic settings
-        self.context = self.browser.new_context(
-            viewport={'width': 1920, 'height': 1080},
-            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        )
+        # Check if we have a saved session
+        session_path = self.load_session()
+
+        # Create context with realistic settings and optional session restore
+        context_options = {
+            'viewport': {'width': 1920, 'height': 1080},
+            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        }
+
+        if session_path:
+            context_options['storage_state'] = session_path
+            logger.info("✓ Loaded saved session (may skip login)")
+
+        self.context = self.browser.new_context(**context_options)
 
         self.page = self.context.new_page()
-        print("✓ Browser ready")
+        logger.info("✓ Browser ready")
 
     def login(self):
         """Login to TikTok account"""
-        print(f"🔐 Logging in to TikTok (method: {LOGIN_METHOD})...")
+        logger.info(f"🔐 Logging in to TikTok (method: {LOGIN_METHOD})...")
 
         if LOGIN_METHOD == 'google':
             self._login_with_google()
@@ -185,9 +297,9 @@ class TikTokUnfollower:
             login_button.click()
 
             # Wait for navigation or 2FA prompt
-            print("⏳ Waiting for login to complete...")
-            print("   (If 2FA is enabled, please complete it in the browser)")
-            print("   (Checking for Messages in sidebar as login indicator)")
+            logger.info("⏳ Waiting for login to complete...")
+            logger.info("   (If 2FA is enabled, please complete it in the browser)")
+            logger.info("   (Checking for Messages in sidebar as login indicator)")
 
             # Wait for either successful login or stay on page for manual intervention
             time.sleep(5)
@@ -212,19 +324,19 @@ class TikTokUnfollower:
                         continue
 
                 if logged_in:
-                    print("✓ Login successful! (Messages menu detected)")
+                    logger.info("✓ Login successful! (Messages menu detected)")
                 else:
                     raise PlaywrightTimeoutError("Messages menu not found")
 
             except PlaywrightTimeoutError:
-                print("⚠️  Please complete login manually if needed (2FA, captcha, etc.)")
-                print("   Press Enter when logged in (check if Messages appears in sidebar)...")
+                logger.info("⚠️  Please complete login manually if needed (2FA, captcha, etc.)")
+                logger.info("   Press Enter when logged in (check if Messages appears in sidebar)...")
                 input()
 
         except Exception as e:
-            print(f"⚠️  Login form interaction failed: {e}")
-            print("   Please log in manually in the browser window")
-            print("   Press Enter when logged in...")
+            logger.info(f"⚠️  Login form interaction failed: {e}")
+            logger.info("   Please log in manually in the browser window")
+            logger.info("   Press Enter when logged in...")
             input()
 
     def _login_with_google(self):
@@ -238,7 +350,7 @@ class TikTokUnfollower:
         try:
             # Look for "Continue with Google" button
             # TikTok may use different selectors, try multiple approaches
-            print("   Looking for 'Continue with Google' button...")
+            logger.info("   Looking for 'Continue with Google' button...")
 
             google_button = None
 
@@ -270,21 +382,21 @@ class TikTokUnfollower:
                     pass
 
             if google_button and google_button.count() > 0:
-                print("   Found Google login button, clicking...")
+                logger.info("   Found Google login button, clicking...")
                 google_button.click()
                 time.sleep(3)
 
                 # Now we should be on Google's OAuth page
-                print("   Please complete Google sign-in in the browser...")
-                print("   This includes:")
-                print("   - Selecting your Google account")
-                print("   - Entering password if needed")
-                print("   - Completing 2FA if enabled")
-                print("   - Granting permissions to TikTok")
+                logger.info("   Please complete Google sign-in in the browser...")
+                logger.info("   This includes:")
+                logger.info("   - Selecting your Google account")
+                logger.info("   - Entering password if needed")
+                logger.info("   - Completing 2FA if enabled")
+                logger.info("   - Granting permissions to TikTok")
 
                 # Wait for redirect back to TikTok after OAuth
-                print("⏳ Waiting for OAuth to complete...")
-                print("   (Checking for Messages in sidebar as login indicator)")
+                logger.info("⏳ Waiting for OAuth to complete...")
+                logger.info("   (Checking for Messages in sidebar as login indicator)")
 
                 # Check if we're logged in by looking for Messages in the left sidebar
                 # Messages menu item only appears when logged in
@@ -306,31 +418,31 @@ class TikTokUnfollower:
                             continue
 
                     if logged_in:
-                        print("✓ Login successful! (Messages menu detected)")
+                        logger.info("✓ Login successful! (Messages menu detected)")
                     else:
                         raise PlaywrightTimeoutError("Messages menu not found")
 
                 except PlaywrightTimeoutError:
-                    print("⚠️  OAuth flow taking longer than expected")
-                    print("   Press Enter when logged in (check if Messages appears in sidebar)...")
+                    logger.info("⚠️  OAuth flow taking longer than expected")
+                    logger.info("   Press Enter when logged in (check if Messages appears in sidebar)...")
                     input()
 
             else:
                 raise Exception("Could not find 'Continue with Google' button")
 
         except Exception as e:
-            print(f"⚠️  Google login failed: {e}")
-            print("   Please complete login manually in the browser window")
-            print("   Steps:")
-            print("   1. Click 'Continue with Google'")
-            print("   2. Select your Google account")
-            print("   3. Complete authentication")
-            print("   Press Enter when logged in...")
+            logger.info(f"⚠️  Google login failed: {e}")
+            logger.info("   Please complete login manually in the browser window")
+            logger.info("   Steps:")
+            logger.info("   1. Click 'Continue with Google'")
+            logger.info("   2. Select your Google account")
+            logger.info("   3. Complete authentication")
+            logger.info("   Press Enter when logged in...")
             input()
 
     def navigate_to_following(self):
         """Open the following modal"""
-        print("📍 Opening following modal...")
+        logger.info("📍 Opening following modal...")
 
         try:
             # Click on profile icon to go to profile
@@ -339,10 +451,10 @@ class TikTokUnfollower:
 
             # Get the profile URL
             current_url = self.page.url
-            print(f"   On profile: {current_url}")
+            logger.info(f"   On profile: {current_url}")
 
             # Look for the Following count/link and click it to open the modal
-            print("   Looking for Following count...")
+            logger.info("   Looking for Following count...")
             modal_opened = False
 
             # Try multiple selectors to find and click the Following count
@@ -364,7 +476,7 @@ class TikTokUnfollower:
                         element = self.page.locator(selector).first
 
                     if element.count() > 0:
-                        print(f"   Found Following count, clicking to open modal...")
+                        logger.info(f"   Found Following count, clicking to open modal...")
                         element.click()
                         modal_opened = True
                         time.sleep(2)
@@ -374,7 +486,7 @@ class TikTokUnfollower:
 
             if not modal_opened:
                 # Fallback: try to find any clickable element with "Following" text
-                print("   Trying text-based search...")
+                logger.info("   Trying text-based search...")
                 try:
                     # Look for the Following count in the tabs section
                     following_tab = self.page.locator('text=Following').first
@@ -389,15 +501,15 @@ class TikTokUnfollower:
                 raise Exception("Could not find Following count to click")
 
             # Wait for the modal to appear
-            print("   Waiting for modal to open...")
+            logger.info("   Waiting for modal to open...")
             try:
                 modal = self.page.locator('[role="dialog"][data-e2e="follow-info-popup"]')
                 modal.wait_for(state='visible', timeout=10000)
-                print("✓ Following modal opened successfully!")
+                logger.info("✓ Following modal opened successfully!")
 
                 # Click on the "Following" tab within the modal to show the following list
                 # The modal has tabs: Following, Followers, Friends, Suggested
-                print("   Clicking 'Following' tab in modal...")
+                logger.info("   Clicking 'Following' tab in modal...")
                 time.sleep(1)
 
                 # Try to find and click the Following tab
@@ -419,30 +531,30 @@ class TikTokUnfollower:
                                 tab.click()
                                 following_tab_clicked = True
                                 time.sleep(1)
-                                print("   ✓ Clicked on Following tab")
+                                logger.info("   ✓ Clicked on Following tab")
                                 break
                         except Exception:
                             continue
 
                     if not following_tab_clicked:
-                        print("   ⚠️  Could not auto-click Following tab, may already be selected")
+                        logger.info("   ⚠️  Could not auto-click Following tab, may already be selected")
 
                 except Exception as e:
-                    print(f"   ⚠️  Error clicking Following tab: {e}")
-                    print("   Continuing anyway - tab may already be selected")
+                    logger.info(f"   ⚠️  Error clicking Following tab: {e}")
+                    logger.info("   Continuing anyway - tab may already be selected")
 
             except PlaywrightTimeoutError:
-                print("⚠️  Modal did not appear as expected")
+                logger.info("⚠️  Modal did not appear as expected")
                 raise ValueError("Following modal did not open")
 
         except Exception as e:
-            print(f"⚠️  Could not open following modal: {e}")
-            print("   Please open the following modal manually:")
-            print("   1. Make sure you're on your profile")
-            print("   2. Click on your 'Following' count number")
-            print("   3. Wait for the popup to appear")
-            print("   4. Click on the 'Following' tab in the modal")
-            print("   Press Enter when the modal is open and Following tab is selected...")
+            logger.info(f"⚠️  Could not open following modal: {e}")
+            logger.info("   Please open the following modal manually:")
+            logger.info("   1. Make sure you're on your profile")
+            logger.info("   2. Click on your 'Following' count number")
+            logger.info("   3. Wait for the popup to appear")
+            logger.info("   4. Click on the 'Following' tab in the modal")
+            logger.info("   Press Enter when the modal is open and Following tab is selected...")
             input()
 
     def validate_on_following_page(self):
@@ -453,20 +565,23 @@ class TikTokUnfollower:
             if modal.count() > 0 and modal.is_visible():
                 return True
             else:
-                print(f"⚠️  Warning: Following modal is not visible")
+                logger.info(f"⚠️  Warning: Following modal is not visible")
                 return False
         except Exception as e:
-            print(f"⚠️  Error checking for modal: {e}")
+            logger.info(f"⚠️  Error checking for modal: {e}")
             return False
 
     def scroll_and_load_followers(self):
         """Scroll through the modal's followers list to load all of them"""
-        print("📜 Loading all followers from modal...")
+        if MAX_FOLLOWERS_TO_REVIEW > 0:
+            logger.info(f"📜 Loading followers from modal (limited to {MAX_FOLLOWERS_TO_REVIEW})...")
+        else:
+            logger.info("📜 Loading all followers from modal...")
 
         # Validate the modal is open
         if not self.validate_on_following_page():
-            print("   Please ensure the Following modal is open")
-            print("   Press Enter to continue anyway, or Ctrl+C to abort...")
+            logger.info("   Please ensure the Following modal is open")
+            logger.info("   Press Enter to continue anyway, or Ctrl+C to abort...")
             try:
                 input()
             except KeyboardInterrupt:
@@ -511,12 +626,17 @@ class TikTokUnfollower:
             if followers == 0:
                 followers = modal.locator('[class*="DivUserContainer"]').count()
 
-            print(f"   Loaded {followers} accounts...")
+            logger.info(f"   Loaded {followers} accounts...")
+
+            # Check if we've reached the user-defined limit
+            if MAX_FOLLOWERS_TO_REVIEW > 0 and followers >= MAX_FOLLOWERS_TO_REVIEW:
+                logger.info(f"✓ Reached review limit. Total: {followers} accounts")
+                break
 
             if followers == previous_count:
                 no_change_count += 1
                 if no_change_count >= 3:
-                    print(f"✓ Finished loading. Total: {followers} accounts")
+                    logger.info(f"✓ Finished loading. Total: {followers} accounts")
                     break
             else:
                 no_change_count = 0
@@ -525,19 +645,19 @@ class TikTokUnfollower:
 
             # Safety check - if we've loaded a very large number, break
             if followers > 15000:
-                print("⚠️  Loaded over 15,000 accounts. Stopping scroll.")
+                logger.info("⚠️  Loaded over 15,000 accounts. Stopping scroll.")
                 break
 
             # Safety check - if nothing loads after multiple attempts
             if followers == 0 and no_change_count >= max_attempts:
-                print("⚠️  No followers found after multiple attempts.")
-                print("   Please verify the Following modal is open and you have followers.")
+                logger.info("⚠️  No followers found after multiple attempts.")
+                logger.info("   Please verify the Following modal is open and you have followers.")
                 break
 
         return followers
 
     def check_if_account_invalid(self, account_element):
-        """Check if an account is banned or deleted"""
+        """Check if an account is banned or deleted. Returns (is_invalid, reason)"""
         try:
             # Look for indicators of banned/deleted accounts
             # These accounts typically show:
@@ -549,17 +669,17 @@ class TikTokUnfollower:
             text_content = account_element.inner_text().lower()
 
             # Check for banned or deleted indicators in the text
-            invalid_indicators = [
-                'banned',
-                'banned account',
-                'account not found',
-                'user not found',
-                'content is unavailable',
-            ]
+            invalid_indicators = {
+                'banned': 'Banned account',
+                'banned account': 'Banned account',
+                'account not found': 'Account not found',
+                'user not found': 'User not found',
+                'content is unavailable': 'Content unavailable',
+            }
 
-            for indicator in invalid_indicators:
+            for indicator, reason in invalid_indicators.items():
                 if indicator in text_content:
-                    return True
+                    return True, reason
 
             # Try multiple selectors to find the username
             # TikTok uses class-based selectors for usernames
@@ -585,9 +705,9 @@ class TikTokUnfollower:
                 # Valid accounts should have @username format with at least 2 characters
                 # Invalid indicators: just '@', '@_', or empty
                 if username in ['@', '@_'] or len(username) <= 1:
-                    return True
+                    return True, 'Invalid username format'
                 # If username looks normal, account is valid
-                return False
+                return False, None
             else:
                 # No username found with any selector - likely invalid
                 # But let's be conservative and not mark as invalid unless we're sure
@@ -595,19 +715,19 @@ class TikTokUnfollower:
                 # Real accounts should have some content beyond just "Following" button
                 if len(text_content.strip()) < 5:
                     # Very little content - probably invalid
-                    return True
+                    return True, 'No username or content found'
                 # Has content but no username found - could be a selector issue
                 # Default to NOT invalid to be safe
-                return False
+                return False, None
 
         except Exception as e:
-            print(f"   Error checking account: {e}")
+            logger.info(f"   Error checking account: {e}")
             # On error, default to NOT invalid to avoid false positives
-            return False
+            return False, None
 
     def unfollow_invalid_accounts(self):
         """Find and unfollow banned/deleted accounts in the modal"""
-        print("🔍 Scanning for banned/deleted accounts in modal...")
+        logger.info("🔍 Scanning for banned/deleted accounts in modal...")
 
         # Get all follower elements from within the modal
         modal = self.page.locator('[role="dialog"][data-e2e="follow-info-popup"]')
@@ -616,10 +736,11 @@ class TikTokUnfollower:
         follower_elements = modal.locator('li').all()
 
         if len(follower_elements) == 0:
-            print("⚠️  No followers loaded in modal. Cannot scan for invalid accounts.")
+            logger.info("⚠️  No followers loaded in modal. Cannot scan for invalid accounts.")
             return 0
 
         invalid_accounts = []
+        skipped_count = 0
 
         # Scan through all followers
         for idx, element in enumerate(follower_elements):
@@ -638,33 +759,45 @@ class TikTokUnfollower:
                         if username_elem.count() > 0:
                             username = username_elem.inner_text().strip()
                 except (PlaywrightTimeoutError, Exception) as e:
-                    print(f"   Could not extract username for account {idx}: {e}")
+                    logger.info(f"   Could not extract username for account {idx}: {e}")
+
+                # Skip if already processed
+                if username in self.state['processed_accounts']:
+                    skipped_count += 1
+                    if idx < 10:  # Show for first 10
+                        logger.info(f"   Account {idx}: {username} - already processed (skipped)")
+                    continue
 
                 # Check if account is invalid (with detailed logging for first 10)
-                is_invalid = self.check_if_account_invalid(element)
+                is_invalid, reason = self.check_if_account_invalid(element)
 
                 # Show detailed info for first 10 accounts to help debug
                 if idx < 10:
-                    status = "INVALID" if is_invalid else "valid"
-                    print(f"   Account {idx}: {username} - {status}")
+                    status = f"INVALID ({reason})" if is_invalid else "valid"
+                    logger.info(f"   Account {idx}: {username} - {status}")
 
                 if is_invalid:
                     if idx >= 10:  # Only print "Found invalid" after first 10
-                        print(f"   Found invalid account: {username}")
+                        logger.info(f"   Found invalid account: {username} ({reason})")
                     invalid_accounts.append({
                         'username': username,
-                        'index': idx
+                        'index': idx,
+                        'reason': reason
                     })
 
                 # Progress update every 100 accounts
                 if (idx + 1) % 100 == 0:
-                    print(f"   Scanned {idx + 1}/{len(follower_elements)} accounts...")
+                    logger.info(f"   Scanned {idx + 1}/{len(follower_elements)} accounts...")
 
             except Exception as e:
-                print(f"   Error processing account {idx}: {e}")
+                logger.info(f"   Error processing account {idx}: {e}")
                 continue
 
-        print(f"✓ Found {len(invalid_accounts)} invalid accounts")
+        logger.info(f"✓ Found {len(invalid_accounts)} invalid accounts ({skipped_count} already processed, skipped)")
+
+        # Export to CSV
+        if invalid_accounts:
+            self.export_to_csv(invalid_accounts)
 
         # Unfollow invalid accounts with rate limiting
         if invalid_accounts:
@@ -677,10 +810,10 @@ class TikTokUnfollower:
         batch_size = min(BATCH_SIZE, len(accounts))
 
         if DRY_RUN:
-            print(f"🧪 DRY RUN MODE: Would unfollow {batch_size} accounts (limited to {BATCH_SIZE} per session)...")
-            print(f"   No accounts will actually be unfollowed. Set DRY_RUN=false in .env to unfollow.")
+            logger.info(f"🧪 DRY RUN MODE: Would unfollow {batch_size} accounts (limited to {BATCH_SIZE} per session)...")
+            logger.info(f"   No accounts will actually be unfollowed. Set DRY_RUN=false in .env to unfollow.")
         else:
-            print(f"🚫 Unfollowing {batch_size} accounts (limited to {BATCH_SIZE} per session)...")
+            logger.info(f"🚫 Unfollowing {batch_size} accounts (limited to {BATCH_SIZE} per session)...")
 
         unfollowed = 0
         for account in accounts[:batch_size]:
@@ -690,7 +823,7 @@ class TikTokUnfollower:
 
                 # Check if we've already processed this account
                 if username in self.state['processed_accounts']:
-                    print(f"   Skipping {username} (already processed)")
+                    logger.info(f"   Skipping {username} (already processed)")
                     continue
 
                 # Re-query the element from modal to avoid stale element issues
@@ -700,12 +833,12 @@ class TikTokUnfollower:
                     follower_items = modal.locator('li')
 
                     if account_index >= follower_items.count():
-                        print(f"   ⚠️  Account index out of range for: {username}")
+                        logger.info(f"   ⚠️  Account index out of range for: {username}")
                         continue
 
                     element = follower_items.nth(account_index)
                 except Exception as e:
-                    print(f"   ⚠️  Could not re-query element for {username}: {e}")
+                    logger.info(f"   ⚠️  Could not re-query element for {username}: {e}")
                     continue
 
                 # Find and click the following/unfollow button
@@ -725,12 +858,12 @@ class TikTokUnfollower:
 
                         if DRY_RUN:
                             # Dry run mode - don't actually click
-                            print(f"   🧪 Would unfollow: {username}")
+                            logger.info(f"   🧪 Would unfollow: {username}")
                         else:
                             # Click unfollow
                             unfollow_button.click()
                             time.sleep(ACTION_DELAY)
-                            print(f"   ✓ Unfollowed: {username}")
+                            logger.info(f"   ✓ Unfollowed: {username}")
 
                         # Track in state (even in dry run, to avoid re-scanning same accounts)
                         self.state['processed_accounts'].append(username)
@@ -743,16 +876,16 @@ class TikTokUnfollower:
 
                         unfollowed += 1
                     else:
-                        print(f"   ⚠️  Could not find unfollow button for: {username}")
+                        logger.info(f"   ⚠️  Could not find unfollow button for: {username}")
                 except PlaywrightTimeoutError:
-                    print(f"   ⚠️  Timeout finding unfollow button for: {username}")
+                    logger.info(f"   ⚠️  Timeout finding unfollow button for: {username}")
                     continue
 
             except Exception as e:
-                print(f"   Error unfollowing {account['username']}: {e}")
+                logger.info(f"   Error unfollowing {account['username']}: {e}")
                 continue
 
-        print(f"✓ Unfollowed {unfollowed} accounts this session")
+        logger.info(f"✓ Unfollowed {unfollowed} accounts this session")
 
         # Update last run time
         self.state['last_run'] = datetime.now().isoformat()
@@ -760,8 +893,8 @@ class TikTokUnfollower:
 
         # Calculate next run time
         next_run = datetime.now() + timedelta(seconds=UNFOLLOW_DELAY)
-        print(f"⏰ Next run scheduled for: {next_run.strftime('%Y-%m-%d %H:%M:%S')}")
-        print(f"   ({UNFOLLOW_DELAY/3600:.1f} hours from now)")
+        logger.info(f"⏰ Next run scheduled for: {next_run.strftime('%Y-%m-%d %H:%M:%S')}")
+        logger.info(f"   ({UNFOLLOW_DELAY/3600:.1f} hours from now)")
 
     def cleanup(self):
         """Clean up browser resources"""
@@ -769,19 +902,19 @@ class TikTokUnfollower:
             if self.context:
                 self.context.close()
         except Exception as e:
-            print(f"   Warning: Error closing context: {e}")
+            logger.info(f"   Warning: Error closing context: {e}")
 
         try:
             if self.browser:
                 self.browser.close()
         except Exception as e:
-            print(f"   Warning: Error closing browser: {e}")
+            logger.info(f"   Warning: Error closing browser: {e}")
 
         try:
             if self.playwright:
                 self.playwright.stop()
         except Exception as e:
-            print(f"   Warning: Error stopping playwright: {e}")
+            logger.info(f"   Warning: Error stopping playwright: {e}")
 
     def run(self):
         """Main execution flow"""
@@ -789,8 +922,8 @@ class TikTokUnfollower:
             # Validate credentials based on login method
             if LOGIN_METHOD == 'email':
                 if not TIKTOK_USERNAME or not TIKTOK_PASSWORD:
-                    print("❌ Error: Please set TIKTOK_USERNAME and TIKTOK_PASSWORD in .env file")
-                    print("   (Required for email login method)")
+                    logger.info("❌ Error: Please set TIKTOK_USERNAME and TIKTOK_PASSWORD in .env file")
+                    logger.info("   (Required for email login method)")
                     return
             # For Google login, credentials are handled through OAuth (no need to check)
 
@@ -799,44 +932,46 @@ class TikTokUnfollower:
 
             self.setup_browser()
             self.login()
+            # Save session after successful login
+            self.save_session_state()
             self.navigate_to_following()
             self.scroll_and_load_followers()
             self.unfollow_invalid_accounts()
 
-            print("\n✅ Script completed successfully!")
-            print(f"📊 Total accounts unfollowed: {len(self.state['unfollowed_accounts'])}")
+            logger.info("\n✅ Script completed successfully!")
+            logger.info(f"📊 Total accounts unfollowed: {len(self.state['unfollowed_accounts'])}")
 
         except KeyboardInterrupt:
-            print("\n\n⚠️  Script interrupted by user (Ctrl+C)")
-            print("   Progress has been saved. You can run the script again later.")
+            logger.info("\n\n⚠️  Script interrupted by user (Ctrl+C)")
+            logger.info("   Progress has been saved. You can run the script again later.")
             return
 
         except Exception as e:
-            print(f"\n❌ Error occurred: {e}")
+            logger.info(f"\n❌ Error occurred: {e}")
             import traceback
             traceback.print_exc()
             return
 
         finally:
             if self.browser or self.context or self.playwright:
-                print("\n🔄 Closing browser...")
+                logger.info("\n🔄 Closing browser...")
                 time.sleep(1)
                 self.cleanup()
 
 
 def main():
-    print("=" * 60)
-    print("TikTok Follower Cleanup Script")
-    print("=" * 60)
+    logger.info("=" * 60)
+    logger.info("TikTok Follower Cleanup Script")
+    logger.info("=" * 60)
 
     if DRY_RUN:
-        print()
-        print("🧪 " + "=" * 56)
-        print("🧪 DRY RUN MODE - NO ACCOUNTS WILL BE UNFOLLOWED")
-        print("🧪 Set DRY_RUN=false in .env to actually unfollow")
-        print("🧪 " + "=" * 56)
+        logger.info("")
+        logger.info("🧪 " + "=" * 56)
+        logger.info("🧪 DRY RUN MODE - NO ACCOUNTS WILL BE UNFOLLOWED")
+        logger.info("🧪 Set DRY_RUN=false in .env to actually unfollow")
+        logger.info("🧪 " + "=" * 56)
 
-    print()
+    logger.info("")
 
     unfollower = TikTokUnfollower()
     unfollower.run()
