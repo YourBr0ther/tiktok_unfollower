@@ -779,6 +779,11 @@ class TikTokUnfollower:
         Returns (is_invalid, reason)
         """
         try:
+            # Quick check: Auto-remove accounts with "user" prefix (default TikTok usernames)
+            if username.lower().startswith('user'):
+                logger.info(f"      ❌ Auto-flagged: Username starts with 'user' (default/spam account)")
+                return True, "Default username format (userXXXX)"
+
             # Navigate to the user's profile
             profile_url = f"https://www.tiktok.com/@{username}"
             logger.info(f"      Checking profile: {profile_url}")

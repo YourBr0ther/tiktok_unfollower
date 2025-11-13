@@ -74,17 +74,19 @@ Single class design that encapsulates all functionality with the following lifec
 Instead of guessing from Following list text, the script **visits each user's profile** to verify if they exist:
 
 1. **Extract usernames** from Following modal
-2. **For each username**, navigate to `https://www.tiktok.com/@{username}`
-3. **Check the profile page** for:
+2. **Quick pre-check**: Auto-flag usernames starting with "user" (e.g., user1234567 - default/spam accounts)
+3. **For each username**, navigate to `https://www.tiktok.com/@{username}`
+4. **Check the profile page** for:
    - "Couldn't find this account" → Invalid
    - "Account not found" → Invalid
    - "Banned account" → Invalid
    - **No videos found** → Invalid (likely deleted/banned/fake)
    - Has videos → Valid
-4. **Returns** `(is_invalid: bool, reason: str)` tuple
-5. **Navigate back** to Following modal to unfollow invalid accounts
+5. **Returns** `(is_invalid: bool, reason: str)` tuple
+6. **Navigate back** to Following modal to unfollow invalid accounts
 
 **Detection reasons** tracked for CSV export:
+- "Default username format (userXXXX)" (auto-flagged, no profile visit needed)
 - "Account not found" (profile doesn't exist)
 - "Banned account" (explicitly banned)
 - "No videos found" (empty profile)
